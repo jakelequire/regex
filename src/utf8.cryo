@@ -1,0 +1,160 @@
+///! utf8: UTF-8 helpers the compiler and the matchers need.
+///!
+///! `sequences` splits a range of scalars into the byte-range sequences
+///! that encode exactly that range, which is how a Unicode class becomes
+///! byte transitions. Encoding goes through `String.push_char`.
+///!
+///! The decoders read one scalar before or after a position, as the word
+///! boundary assertions need. The standard library decodes forward only,
+///! through an iterator, and keeps its single-scalar decoder private, so
+///! the two small decoders here are the library's own.
+
+namespace regex::utf8;
+
+import std::core::option::{ Option };
+import std::collections::array::{ Array };
+import std::collections::string::{ String };
+
+/// The byte ranges that encode one contiguous run of scalars of the same
+/// encoded length: byte `i` of the encoding is in `low[i]..=high[i]`.
+internal type struct Utf8Sequence {
+    length: i64;
+    low: [u8; 4];
+    high: [u8; 4];
+}
+
+private type struct ScalarRange {
+    start: u32;
+    end: u32;
+}
+
+/// The largest scalar each encoded length holds, by length minus one.
+private function max_scalar_of_length(length: i64) -> u32 {
+    if (length == 1) { return 0x7F; }
+    if (length == 2) { return 0x7FF; }
+    if (length == 3) { return 0xFFFF; }
+    return 0x10FFFF;
+}
+
+/// The sequences encoding `[start, end]`, appended to `out` in ascending
+/// order. Surrogates in the range encode nothing and are skipped.
+internal function sequences(start: u32, end: u32, out: mut &Array<Utf8Sequence>) -> void {
+    mut pending: Array<ScalarRange> = Array::new();
+    pending.push(ScalarRange { start: start, end: end });
+    mut scratch: String = String::new();
+    while (pending.length() > 0) {
+        mut range: ScalarRange = pending.pop().unwrap();
+        mut emitted: boolean = false;
+        while (!emitted) {
+            if (range.start > range.end) { break; }
+            // No scalar is a surrogate: split them out.
+            if (range.start < 0xE000 && range.end > 0xD7FF) {
+                if (range.end >= 0xE000) {
+                    pending.push(ScalarRange { start: 0xE000, end: range.end });
+                }
+                if (range.start >= 0xD800) { break; }
+                range.end = 0xD7FF;
+                continue;
+            }
+            // Every part must have one encoded length.
+            mut split: boolean = false;
+            for (mut length: i64 = 1; length < 4; length++) {
+                const max: u32 = max_scalar_of_length(length);
+                if (range.start <= max && max < range.end) {
+                    pending.push(ScalarRange { start: max + 1, end: range.end });
+                    range.end = max;
+                    split = true;
+                    break;
+                }
+            }
+            if (split) { continue; }
+            // Below the leading byte, every byte position must span its
+            // whole continuation range or vary only in the last position.
+            for (mut i: i64 = 1; i < 4; i++) {
+                const mask: u32 = ((1 as u32) << (6 * i) as u32) - 1;
+                if ((range.start & ~mask) != (range.end & ~mask)) {
+                    if ((range.start & mask) != 0) {
+                        pending.push(ScalarRange { start: (range.start | mask) + 1, end: range.end });
+                        range.end = range.start | mask;
+                        split = true;
+                        break;
+                    }
+                    if ((range.end & mask) != mask) {
+                        pending.push(ScalarRange { start: range.end & ~mask, end: range.end });
+                        range.end = (range.end & ~mask) - 1;
+                        split = true;
+                        break;
+                    }
+                }
+            }
+            if (split) { continue; }
+            mut sequence: Utf8Sequence = Utf8Sequence { length: 0, low: [0, 0, 0, 0], high: [0, 0, 0, 0] };
+            scratch.clear();
+            scratch.push_char(range.start as char);
+            const low_length: i64 = scratch.length();
+            for (mut i: i64 = 0; i < low_length; i++) {
+                sequence.low[i] = scratch.as_bytes()[i];
+            }
+            scratch.clear();
+            scratch.push_char(range.end as char);
+            for (mut i: i64 = 0; i < low_length; i++) {
+                sequence.high[i] = scratch.as_bytes()[i];
+            }
+            sequence.length = low_length;
+            out.push(sequence);
+            emitted = true;
+        }
+    }
+}
+
+/// True when byte `position` of `[bytes, bytes + length)` starts a scalar
+/// (or is the end): it is not a continuation byte.
+![inline]
+internal function is_boundary(bytes: u8*, length: i64, position: i64) -> boolean {
+    if (position <= 0 || position >= length) { return true; }
+    return (bytes[position] & 0xC0) != 0x80;
+}
+
+/// The number of bytes a well-formed sequence led by `lead` takes, or 0
+/// for a byte no sequence starts with.
+private function sequence_length(lead: u8) -> i64 {
+    if (lead < 0x80) { return 1; }
+    if (lead >= 0xC2 && lead <= 0xDF) { return 2; }
+    if (lead >= 0xE0 && lead <= 0xEF) { return 3; }
+    if (lead >= 0xF0 && lead <= 0xF4) { return 4; }
+    return 0;
+}
+
+/// The scalar encoded at `position`, or `None` at the end or where the
+/// bytes there are not well-formed UTF-8.
+internal function decode_at(bytes: u8*, length: i64, position: i64) -> Option<u32> {
+    if (position < 0 || position >= length) { return Option::None; }
+    const lead: u8 = bytes[position];
+    const width: i64 = sequence_length(lead);
+    if (width == 0 || position + width > length) { return Option::None; }
+    if (width == 1) { return Option::Some(lead as u32); }
+    mut scalar: u32 = (lead as u32) & (0x7F >> width as u32);
+    for (mut i: i64 = 1; i < width; i++) {
+        const next: u8 = bytes[position + i];
+        if ((next & 0xC0) != 0x80) { return Option::None; }
+        scalar = (scalar << 6) | ((next & 0x3F) as u32);
+    }
+    // Overlong forms, surrogates and values past the last scalar.
+    if (width == 3 && (scalar < 0x800 || (scalar >= 0xD800 && scalar <= 0xDFFF))) { return Option::None; }
+    if (width == 4 && (scalar < 0x10000 || scalar > 0x10FFFF)) { return Option::None; }
+    return Option::Some(scalar);
+}
+
+/// The scalar that ends just before `position`, or `None` at the start or
+/// where the bytes there are not well-formed UTF-8.
+internal function decode_before(bytes: u8*, length: i64, position: i64) -> Option<u32> {
+    if (position <= 0 || position > length) { return Option::None; }
+    mut start: i64 = position - 1;
+    const limit: i64 = if (position >= 4) { position - 4 } else { 0 };
+    while (start > limit && (bytes[start] & 0xC0) == 0x80) {
+        start = start - 1;
+    }
+    const lead: u8 = bytes[start];
+    if (start + sequence_length(lead) != position) { return Option::None; }
+    return decode_at(bytes, length, start);
+}

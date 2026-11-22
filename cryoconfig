@@ -1,0 +1,22 @@
+[project]
+project_name = "regex"
+output_dir   = "build"
+# The demo program and tests/ import the library through its source root.
+source_paths = ["src"]
+
+[lib]
+name       = "regex"
+source_dir = "src"
+
+# `cryo test` needs an executable target; the demo is that target.
+[[bin]]
+name        = "regex-demo"
+entry_point = "examples/demo.cryo"
+
+[[bin]]
+name        = "regex-bench"
+entry_point = "bench/main.cryo"
+
+[compiler]
+
+[dependencies]

@@ -1,0 +1,315 @@
+///! Engine: a compiled pattern and the searches both front ends share.
+///!
+///! `text::Regex` and `bytes::Regex` are thin views over one `Engine`; the
+///! difference between them is whether the pattern must match only UTF-8
+///! and what type a haystack is.
+///!
+///! Searching needs scratch memory sized to the automaton. Each engine
+///! keeps one cache per kind of search (match only, overall span, every
+///! group) and lends it to one search at a time: a search that finds the
+///! cache in use - another thread searching with the same regex - makes a
+///! cache of its own for the call instead of waiting. So a regex may be
+///! shared between threads, and the common single-threaded case allocates
+///! nothing per search.
+
+namespace regex::engine;
+
+import std::core::option::{ Option };
+import std::core::result::{ Result };
+import std::core::drop::{ Drop };
+import std::alloc::box::{ Box };
+import std::core::mem;
+import std::collections::array::{ Array };
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import std::sync::atomic::{ Atomic, MemoryOrder };
+import regex::error::{ Error };
+import regex::nfa::{ Nfa };
+import regex::compiler;
+import regex::pikevm::{ Cache, Input, NO_POSITION };
+import regex::pikevm;
+import regex::prefilter::{ Prefilter };
+import regex::syntax::hir::{ GroupInfo };
+import regex::syntax::parser::{ Flags, ParseOptions, Parsed };
+import regex::syntax::parser;
+import regex::utf8;
+
+/// Default bound on a compiled automaton's memory: 10 MiB.
+internal const DEFAULT_SIZE_LIMIT: i64 = 10 * 1024 * 1024;
+/// Default bound on group and class nesting.
+internal const DEFAULT_NEST_LIMIT: u32 = 250;
+
+/// Everything a pattern is compiled with.
+internal type struct Config {
+    flags: Flags;
+    nest_limit: u32;
+    size_limit: i64;
+    /// The pattern may only match valid UTF-8 (a text regex).
+    utf8: boolean;
+
+    internal static default_for(utf8_only: boolean) -> Config {
+        return Config {
+            flags: Flags {
+                case_insensitive: false,
+                multi_line: false,
+                dot_matches_new_line: false,
+                swap_greed: false,
+                ignore_whitespace: false,
+                unicode: true,
+            },
+            nest_limit: DEFAULT_NEST_LIMIT,
+            size_limit: DEFAULT_SIZE_LIMIT,
+            utf8: utf8_only,
+        };
+    }
+}
+
+/// One lendable cache and the flag saying it is lent.
+private type struct CachePool {
+    busy: Atomic<boolean>;
+    cache: mut Cache*;
+}
+
+implement trait Drop for struct CachePool {
+    drop(mut &this) -> void {
+        if (this.cache != null) {
+            mem::drop(Box::from_raw(this.cache));
+            this.cache = null;
+        }
+    }
+}
+
+/// Where an iteration over successive matches stands.
+internal type struct Cursor {
+    /// Where the next search starts.
+    position: i64;
+    /// The end of the previous match, or -1 before the first.
+    last_match_end: i64;
+    done: boolean;
+
+    internal static start_at(position: i64) -> Cursor {
+        return Cursor { position: position, last_match_end: -1, done: false };
+    }
+}
+
+internal type struct Engine {
+    private pattern: String;
+    private nfa: Nfa;
+    private groups: GroupInfo;
+    private prefilter: Prefilter;
+    /// Caches for 0 slots (match only), 2 (the whole match) and every slot.
+    private pools: [mut CachePool*; 3];
+
+    internal static build(pattern: Str, config: &Config) -> Result<Engine, Error> {
+        const options: ParseOptions = ParseOptions {
+            flags: config.flags,
+            nest_limit: config.nest_limit,
+            utf8: config.utf8,
+        };
+        const parsed: Parsed = parser::parse(pattern, options)?;
+        const { hir, groups }: Parsed = parsed;
+        const slot_count: u32 = (groups.length() * 2) as u32;
+        const nfa: Nfa = compiler::compile(&hir, slot_count, config.utf8, config.size_limit, pattern)?;
+        const prefilter: Prefilter = Prefilter::build(&hir, &nfa);
+        return Result::Ok(Engine {
+            pattern: String::from_str(pattern),
+            nfa: nfa,
+            groups: groups,
+            prefilter: prefilter,
+            pools: [
+                new CachePool { busy: Atomic::new(false), cache: null },
+                new CachePool { busy: Atomic::new(false), cache: null },
+                new CachePool { busy: Atomic::new(false), cache: null },
+            ],
+        });
+    }
+
+    internal pattern(&this) -> Str {
+        return this.pattern.as_str();
+    }
+
+    internal groups(&this) -> &GroupInfo {
+        return &this.groups;
+    }
+
+    /// Two per group, the whole match included.
+    internal slot_count(&this) -> i64 {
+        return this.groups.length() * 2;
+    }
+
+    internal is_utf8(&this) -> boolean {
+        return this.nfa.utf8;
+    }
+
+    /// Run one search, filling as many of `slots` as it holds (0, 2, or
+    /// every slot).
+    internal search(&this, input: &Input, slots: mut &Array<i64>) -> boolean {
+        const wanted: i64 = slots.length();
+        const which: i64 = if (wanted == 0) { 0 } else { if (wanted == 2) { 1 } else { 2 } };
+        const pool: mut CachePool* = this.pools[which];
+        const acquired: boolean = pool.busy.compare_exchange(false, true, MemoryOrder::Acquire, MemoryOrder::Relaxed).is_ok();
+        if (!acquired) {
+            mut own: Cache = Cache::new(&this.nfa, wanted);
+            return pikevm::search(&this.nfa, &this.prefilter, &own, input, slots);
+        }
+        if (pool.cache == null) {
+            pool.cache = Box::new(Cache::new(&this.nfa, wanted)).into_raw();
+        }
+        const found: boolean = pikevm::search(&this.nfa, &this.prefilter, pool.cache, input, slots);
+        pool.busy.store(false, MemoryOrder::Release);
+        return found;
+    }
+
+    /// True when the pattern matches anywhere in `[start, length)`.
+    internal is_match(&this, bytes: u8*, length: i64, start: i64) -> boolean {
+        if (start < 0 || start > length) { return false; }
+        const input: Input = Input { bytes: bytes, length: length, start: start, end: length, anchored: false, earliest: true };
+        mut none: Array<i64> = Array::new();
+        return this.search(&input, &none);
+    }
+
+    /// The leftmost-first match at or after `start`, into `slots`.
+    internal find_at(&this, bytes: u8*, length: i64, start: i64, slots: mut &Array<i64>) -> boolean {
+        if (start < 0 || start > length) { return false; }
+        const input: Input = Input { bytes: bytes, length: length, start: start, end: length, anchored: false, earliest: false };
+        return this.search(&input, slots);
+    }
+
+    /// The next match of an iteration, into `slots`; false when there is
+    /// none. An empty match directly after the previous match is skipped,
+    /// and after an empty match the search moves on one scalar (or, for a
+    /// byte regex, one byte), so iteration always ends.
+    internal next_match(&this, bytes: u8*, length: i64, cursor: mut &Cursor, slots: mut &Array<i64>) -> boolean {
+        while (!cursor.done) {
+            if (cursor.position > length || !this.find_at(bytes, length, cursor.position, slots)) {
+                cursor.done = true;
+                return false;
+            }
+            const start: i64 = slots[0];
+            const end: i64 = slots[1];
+            if (start == end) {
+                cursor.position = this.step_past(bytes, length, end);
+                if (end == cursor.last_match_end) { continue; }
+            } else {
+                cursor.position = end;
+            }
+            cursor.last_match_end = end;
+            return true;
+        }
+        return false;
+    }
+
+    /// The position one scalar (text) or one byte (bytes) past `position`.
+    private step_past(&this, bytes: u8*, length: i64, position: i64) -> i64 {
+        mut next: i64 = position + 1;
+        if (this.nfa.utf8) {
+            while (next < length && !utf8::is_boundary(bytes, length, next)) { next = next + 1; }
+        }
+        return next;
+    }
+}
+
+implement trait Drop for struct Engine {
+    drop(mut &this) -> void {
+        for (mut i: i64 = 0; i < 3; i++) {
+            if (this.pools[i] != null) {
+                delete this.pools[i];
+                this.pools[i] = null;
+            }
+        }
+    }
+}
+
+/// `slots` sized for `count` slots, every one unset.
+internal function new_slots(count: i64) -> Array<i64> {
+    mut slots: Array<i64> = Array::with_capacity(count);
+    slots.resize(count, NO_POSITION);
+    return slots;
+}
+
+/// Expand `template` against a match, appending to `out`. `$N` and `${N}`
+/// name a group by number, `$name` and `${name}` by name, and `$$` is a
+/// dollar sign. A name runs over ASCII letters, digits and underscores,
+/// except that one starting with a digit stops at the first non-digit, so
+/// `$1a` is group 1 followed by `a`. A group that does not exist or did
+/// not participate expands to nothing; a `$` that starts no reference is
+/// itself.
+internal function expand(template: Str, haystack: u8*, slots: &Array<i64>, groups: &GroupInfo, out: mut &Array<u8>) -> void {
+    const text: u8* = template.as_ptr();
+    const length: i64 = template.length();
+    mut i: i64 = 0;
+    while (i < length) {
+        const byte: u8 = text[i];
+        if (byte != 0x24 || i + 1 >= length) { // '$'
+            out.push(byte);
+            i = i + 1;
+            continue;
+        }
+        const next: u8 = text[i + 1];
+        if (next == 0x24) {
+            out.push(0x24);
+            i = i + 2;
+            continue;
+        }
+        mut name_start: i64 = i + 1;
+        mut name_end: i64 = name_start;
+        mut resume: i64 = 0;
+        if (next == 0x7B) { // '{'
+            name_start = i + 2;
+            name_end = name_start;
+            while (name_end < length && text[name_end] != 0x7D) { name_end = name_end + 1; }
+            if (name_end >= length || name_end == name_start) {
+                out.push(byte);
+                i = i + 1;
+                continue;
+            }
+            resume = name_end + 1;
+        } else {
+            const digits: boolean = next.is_digit();
+            while (name_end < length) {
+                const c: u8 = text[name_end];
+                const continues: boolean = if (digits) { c.is_digit() } else { c.is_alpha() || c.is_digit() || c == 0x5F };
+                if (!continues) { break; }
+                name_end = name_end + 1;
+            }
+            if (name_end == name_start) {
+                out.push(byte);
+                i = i + 1;
+                continue;
+            }
+            resume = name_end;
+        }
+        const name: Str = Str::from_raw(text + name_start, name_end - name_start);
+        const group: Option<i64> = group_by_reference(name, groups);
+        match (group) {
+            Option::Some(index) => {
+                const start: i64 = slots[index * 2];
+                const end: i64 = slots[index * 2 + 1];
+                if (start != NO_POSITION && end != NO_POSITION) {
+                    for (mut k: i64 = start; k < end; k++) { out.push(haystack[k]); }
+                }
+            }
+            Option::None => { }
+        }
+        i = resume;
+    }
+}
+
+/// The group a replacement reference names: all digits is a number,
+/// anything else a name.
+private function group_by_reference(name: Str, groups: &GroupInfo) -> Option<i64> {
+    mut all_digits: boolean = true;
+    for (byte in name.as_bytes()) {
+        if (!byte.is_digit()) { all_digits = false; }
+    }
+    if (all_digits) {
+        mut index: i64 = 0;
+        for (byte in name.as_bytes()) {
+            if (index > groups.length()) { return Option::None; }
+            index = index * 10 + (byte - 0x30) as i64;
+        }
+        if (index < groups.length()) { return Option::Some(index); }
+        return Option::None;
+    }
+    return groups.index_of(name);
+}

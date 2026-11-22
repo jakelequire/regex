@@ -1,0 +1,269 @@
+///! Hir: a parsed pattern as a tree of normalized nodes.
+///!
+///! Flags are already applied: a case-insensitive literal is a class, a
+///! `.` is the class it stands for, and every class is a set of ranges.
+///! The tree lives in one arena. A node is a small `Copy` value naming its
+///! children and payload by index, so the tree is walked and rebuilt
+///! without moving owned values around.
+
+namespace regex::syntax::hir;
+
+import std::core::option::{ Option };
+import std::core::slice::{ Slice };
+import std::collections::array::{ Array };
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import regex::syntax::intervals::{ ClassRanges };
+
+/// An assertion about the position between two bytes; matches no text.
+internal type enum Look {
+    /// `\A`, and `^` outside multi-line mode: the start of the haystack.
+    Start;
+    /// `\z`, and `$` outside multi-line mode: the end of the haystack.
+    End;
+    /// `\Z`: the end of the haystack, or just before a `\n` that ends it.
+    EndBeforeFinalNewline;
+    /// `^` in multi-line mode: the start, or just after a `\n`.
+    StartLine;
+    /// `$` in multi-line mode: the end, or just before a `\n`.
+    EndLine;
+    /// `\b` in Unicode mode.
+    WordBoundaryUnicode;
+    /// `\B` in Unicode mode.
+    NotWordBoundaryUnicode;
+    /// `\b` with Unicode mode off: words are ASCII `[0-9A-Za-z_]`.
+    WordBoundaryAscii;
+    /// `\B` with Unicode mode off.
+    NotWordBoundaryAscii;
+}
+
+/// A repetition count with no upper bound.
+internal const UNBOUNDED: u32 = 0xFFFFFFFF;
+
+/// One node. Payload indexes point into the owning `Hir`'s pools.
+internal type enum HirNode {
+    /// Matches the empty string.
+    Empty;
+    /// The bytes `literal_bytes[start .. start + length]`, in order.
+    Literal(u32, u32);
+    /// One scalar (or, for a byte class, one byte) from `classes[index]`.
+    Class(u32);
+    Look(Look);
+    /// `sub` repeated at least `min` and at most `max` times (`UNBOUNDED`
+    /// for no maximum); `greedy` prefers more repetitions.
+    Repetition(u32, u32, boolean, u32);
+    /// Capture group `index` around `sub`.
+    Capture(u32, u32);
+    /// `children[first .. first + count]`, matched in sequence.
+    Concat(u32, u32);
+    /// `children[first .. first + count]`, preferred in that order.
+    Alternation(u32, u32);
+}
+
+/// A class node's payload: the set, and whether it is a set of bytes
+/// (Unicode mode off) rather than of scalars.
+internal type struct HirClass {
+    ranges: ClassRanges;
+    bytes: boolean;
+}
+
+internal type struct Hir {
+    private nodes: Array<HirNode>;
+    private children: Array<u32>;
+    private literal_bytes: Array<u8>;
+    private classes: Array<HirClass>;
+    private root: u32;
+
+    internal static new() -> Hir {
+        return Hir {
+            nodes: Array::new(),
+            children: Array::new(),
+            literal_bytes: Array::new(),
+            classes: Array::new(),
+            root: 0,
+        };
+    }
+
+    internal root(&this) -> u32 {
+        return this.root;
+    }
+
+    internal set_root(mut &this, node: u32) -> void {
+        this.root = node;
+    }
+
+    internal node(&this, id: u32) -> HirNode {
+        return this.nodes[id];
+    }
+
+    internal node_count(&this) -> i64 {
+        return this.nodes.length();
+    }
+
+    internal child(&this, first: u32, offset: u32) -> u32 {
+        return this.children[first + offset];
+    }
+
+    internal literal(&this, start: u32, length: u32) -> Slice<u8> {
+        return this.literal_bytes.as_slice().subslice(start as i64, (start + length) as i64);
+    }
+
+    internal class(&this, index: u32) -> HirClass* {
+        return this.classes.get_ref(index as i64).unwrap();
+    }
+
+    private add(mut &this, node: HirNode) -> u32 {
+        this.nodes.push(node);
+        return (this.nodes.length() - 1) as u32;
+    }
+
+    internal add_empty(mut &this) -> u32 {
+        return this.add(HirNode::Empty);
+    }
+
+    internal add_look(mut &this, look: Look) -> u32 {
+        return this.add(HirNode::Look(look));
+    }
+
+    /// A literal of `bytes`. An empty one is the empty node.
+    internal add_literal(mut &this, bytes: Slice<u8>) -> u32 {
+        if (bytes.length() == 0) { return this.add_empty(); }
+        const start: u32 = this.literal_bytes.length() as u32;
+        this.literal_bytes.append(bytes);
+        return this.add(HirNode::Literal(start, bytes.length() as u32));
+    }
+
+    /// A class over `ranges`. A class holding one value is that value's
+    /// literal; an empty class never matches and is kept as a class.
+    internal add_class(mut &this, ranges: ClassRanges, bytes: boolean) -> u32 {
+        match (ranges.single_value()) {
+            Option::Some(value) => {
+                if (bytes || value < 0x80) {
+                    this.literal_bytes.push(value as u8);
+                    return this.add(HirNode::Literal((this.literal_bytes.length() - 1) as u32, 1));
+                }
+                mut encoded: String = String::new();
+                encoded.push_char(value as char);
+                return this.add_literal(encoded.as_bytes());
+            }
+            Option::None => { }
+        }
+        this.classes.push(HirClass { ranges: ranges, bytes: bytes });
+        return this.add(HirNode::Class((this.classes.length() - 1) as u32));
+    }
+
+    internal add_repetition(mut &this, min: u32, max: u32, greedy: boolean, sub: u32) -> u32 {
+        if (min == 1 && max == 1) { return sub; }
+        if (max == 0) { return this.add_empty(); }
+        return this.add(HirNode::Repetition(min, max, greedy, sub));
+    }
+
+    internal add_capture(mut &this, index: u32, sub: u32) -> u32 {
+        return this.add(HirNode::Capture(index, sub));
+    }
+
+    /// The sequence of `items`, with adjacent literals joined and empty
+    /// nodes dropped. One item is that item; none is the empty node.
+    internal add_concat(mut &this, items: Slice<u32>) -> u32 {
+        mut kept: Array<u32> = Array::new();
+        mut pending: Array<u8> = Array::new();
+        for (item in items) {
+            match (this.nodes[item]) {
+                HirNode::Empty => { }
+                HirNode::Literal(start, length) => {
+                    pending.append(this.literal(start, length));
+                }
+                HirNode::Concat(first, count) => {
+                    // A nested sequence is flattened into this one.
+                    for (mut i: u32 = 0; i < count; i++) {
+                        const inner: u32 = this.children[first + i];
+                        match (this.nodes[inner]) {
+                            HirNode::Literal(start, length) => { pending.append(this.literal(start, length)); }
+                            _ => {
+                                if (pending.length() > 0) {
+                                    kept.push(this.add_literal(pending.as_slice()));
+                                    pending.clear();
+                                }
+                                kept.push(inner);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if (pending.length() > 0) {
+                        kept.push(this.add_literal(pending.as_slice()));
+                        pending.clear();
+                    }
+                    kept.push(item);
+                }
+            }
+        }
+        if (pending.length() > 0) {
+            kept.push(this.add_literal(pending.as_slice()));
+        }
+        if (kept.length() == 0) { return this.add_empty(); }
+        if (kept.length() == 1) { return kept[0]; }
+        const first: u32 = this.children.length() as u32;
+        this.children.append(kept.as_slice());
+        return this.add(HirNode::Concat(first, kept.length() as u32));
+    }
+
+    /// The alternation of `items`, in priority order. One item is that item.
+    internal add_alternation(mut &this, items: Slice<u32>) -> u32 {
+        if (items.length() == 1) { return items[0]; }
+        const first: u32 = this.children.length() as u32;
+        this.children.append(items);
+        return this.add(HirNode::Alternation(first, items.length() as u32));
+    }
+}
+
+/// The capture groups of a pattern: their count and their names.
+public type struct GroupInfo {
+    private names: Array<String>;
+    private named: Array<boolean>;
+
+    internal static new() -> GroupInfo {
+        mut info: GroupInfo = GroupInfo { names: Array::new(), named: Array::new() };
+        // Group 0 is the whole match and has no name.
+        info.names.push(String::new());
+        info.named.push(false);
+        return info;
+    }
+
+    /// The number of groups, the whole match (group 0) included.
+    public length(&this) -> i64 {
+        return this.names.length();
+    }
+
+    /// The name of group `index`, if it has one.
+    public name(&this, index: i64) -> Option<Str> {
+        if (index < 0 || index >= this.names.length()) { return Option::None; }
+        if (!this.named[index]) { return Option::None; }
+        return Option::Some(this.names.get_ref(index).unwrap().as_str());
+    }
+
+    /// The index of the group called `name`.
+    public index_of(&this, name: Str) -> Option<i64> {
+        for (mut i: i64 = 1; i < this.names.length(); i++) {
+            if (this.named[i] && this.names.get_ref(i).unwrap().as_str() == name) {
+                return Option::Some(i);
+            }
+        }
+        return Option::None;
+    }
+
+    /// Add the next group, named or not; answers its index.
+    internal add(mut &this, name: Option<Str>) -> u32 {
+        match (name) {
+            Option::Some(text) => {
+                this.names.push(String::from_str(text));
+                this.named.push(true);
+            }
+            Option::None => {
+                this.names.push(String::new());
+                this.named.push(false);
+            }
+        }
+        return (this.names.length() - 1) as u32;
+    }
+}

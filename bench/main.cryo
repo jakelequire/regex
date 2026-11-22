@@ -1,0 +1,96 @@
+///! Throughput benchmarks: `cryo build`, then `build/regex-bench`.
+///!
+///! Each case runs a search over a 2 MiB haystack (or many short ones)
+///! several times and reports the best run, in MiB/s of haystack scanned.
+
+namespace Bench;
+
+import regex::{ Regex, RegexBuilder };
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import std::time::clock::{ Instant };
+import std::time::duration::{ Duration };
+import std::fmt;
+
+/// A deterministic English-like haystack of about `size` bytes, with a
+/// sprinkling of e-mail addresses, numbers and Greek words.
+function haystack(size: i64) -> String {
+    const words: [string; 24] = [
+        "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
+        "Sherlock", "Holmes", "watched", "carefully", "as", "the", "rain",
+        "fell", "on", "Baker", "Street", "and", "nothing", "moved", "at", "all",
+    ];
+    mut out: String = String::with_capacity(size + 64);
+    mut state: u64 = 0x9E3779B97F4A7C15;
+    mut count: i64 = 0;
+    while (out.length() < size) {
+        state = state * 6364136223846793005 + 1442695040888963407;
+        const pick: i64 = ((state >> 33) % 24) as i64;
+        out.push(Str::new(words[pick]));
+        count = count + 1;
+        if (count % 97 == 0) { out.push(Str::new(" someone@example.com")); }
+        if (count % 53 == 0) { out.push(Str::new(" 2026-11-02")); }
+        if (count % 211 == 0) { out.push(Str::new(" \u{3b1}\u{3bb}\u{3c6}\u{3b1}")); }
+        out.push_byte(if (count % 13 == 0) { 0x0A as u8 } else { 0x20 as u8 });
+    }
+    return out;
+}
+
+/// Best of `rounds` runs of counting the matches of `pattern` in `text`.
+function bench_find_iter(name: string, pattern: string, text: Str, rounds: i64) -> void {
+    const re: Regex = Regex::new(Str::new(pattern)).unwrap();
+    mut best: u64 = 0xFFFFFFFFFFFFFFFF;
+    mut matches: i64 = 0;
+    for (mut round: i64 = 0; round < rounds; round++) {
+        const start: Instant = Instant::now();
+        mut count: i64 = 0;
+        for (m in re.find_iter(text)) { count = count + 1; }
+        const nanos: u64 = start.elapsed().as_nanos();
+        if (nanos < best) { best = nanos; }
+        matches = count;
+    }
+    report(name, text.length(), best, matches);
+}
+
+function bench_is_match_short(name: string, pattern: string, rounds: i64) -> void {
+    const re: Regex = Regex::new(Str::new(pattern)).unwrap();
+    const subject: Str = Str::new("user-1234@example.com");
+    const calls: i64 = 100000;
+    mut best: u64 = 0xFFFFFFFFFFFFFFFF;
+    mut hits: i64 = 0;
+    for (mut round: i64 = 0; round < rounds; round++) {
+        const start: Instant = Instant::now();
+        mut count: i64 = 0;
+        for (mut i: i64 = 0; i < calls; i++) {
+            if (re.is_match(subject)) { count = count + 1; }
+        }
+        const nanos: u64 = start.elapsed().as_nanos();
+        if (nanos < best) { best = nanos; }
+        hits = count;
+    }
+    const per_call: u64 = best / (calls as u64);
+    fmt::println(f"{name:<34} {per_call:>8} ns/call   ({hits} hits)");
+}
+
+function report(name: string, bytes: i64, nanos: u64, matches: i64) -> void {
+    const mib: f64 = (bytes as f64) / (1024.0 * 1024.0);
+    const seconds: f64 = (nanos as f64) / 1000000000.0;
+    const throughput: f64 = mib / seconds;
+    fmt::println(f"{name:<34} {throughput:>8.1} MiB/s   ({matches} matches)");
+}
+
+function main() -> i32 {
+    const text: String = haystack(2 * 1024 * 1024);
+    const view: Str = text.as_str();
+    fmt::println(f"haystack: {view.length()} bytes");
+    bench_find_iter("literal: Sherlock", "Sherlock", view, 3);
+    bench_find_iter("literal, rare: Moriarty", "Moriarty", view, 3);
+    bench_find_iter("alternation: Sherlock|Holmes", "Sherlock|Holmes", view, 3);
+    bench_find_iter("email: \\w+@\\w+\\.com", "\\w+@\\w+\\.com", view, 3);
+    bench_find_iter("date: \\d{4}-\\d{2}-\\d{2}", "\\d{4}-\\d{2}-\\d{2}", view, 3);
+    bench_find_iter("words: \\b\\w+\\b", "\\b\\w+\\b", view, 3);
+    bench_find_iter("unicode: \\p{Greek}+", "\\p{Greek}+", view, 3);
+    bench_find_iter("suffix: [a-z]+ing", "[a-z]+ing", view, 3);
+    bench_is_match_short("is_match short: @\\w+\\.com$", "@\\w+\\.com$", 3);
+    return 0;
+}

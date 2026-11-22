@@ -1,0 +1,185 @@
+///! Hand-written matching cases, covering what the differential cases
+///! cannot: Unicode classes and case folding, every flag, the anchors,
+///! iteration over successive matches, and bracketed class operations.
+///! Each case lists every match `find_iter` yields, as `start-end` byte
+///! spans separated by spaces; an empty list means no match.
+
+![config(testing)]
+namespace RegexTests::Matching;
+
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import std::test::assert::{ bail };
+import std::test::error::{ TestError };
+import regex::{ Regex, Match };
+
+private type struct Case {
+    pattern: string;
+    haystack: string;
+    expected: string;
+}
+
+private const CASES: [Case; 106] = [
+    // Literals, alternation, iteration
+    Case { pattern: "a", haystack: "aaa", expected: "0-1 1-2 2-3" },
+    Case { pattern: "abc", haystack: "xabcabc", expected: "1-4 4-7" },
+    Case { pattern: "a|b", haystack: "abc", expected: "0-1 1-2" },
+    Case { pattern: "a|ab", haystack: "ab", expected: "0-1" },
+    Case { pattern: "ab|a", haystack: "ab", expected: "0-2" },
+    Case { pattern: "a|", haystack: "b", expected: "0-0 1-1" },
+    Case { pattern: "", haystack: "abc", expected: "0-0 1-1 2-2 3-3" },
+    Case { pattern: "", haystack: "\u{e9}", expected: "0-0 2-2" },
+    Case { pattern: "a*", haystack: "baaa", expected: "0-0 1-4" },
+    Case { pattern: "a*", haystack: "aab", expected: "0-2 3-3" },
+    Case { pattern: "x*", haystack: "\u{e9}x", expected: "0-0 2-3" },
+    Case { pattern: "a+?", haystack: "aaa", expected: "0-1 1-2 2-3" },
+    Case { pattern: "a*?", haystack: "aa", expected: "0-0 1-1 2-2" },
+    Case { pattern: "a??b", haystack: "ab", expected: "0-2" },
+    Case { pattern: "(?U)a+", haystack: "aaa", expected: "0-1 1-2 2-3" },
+    Case { pattern: "(?U)a+?", haystack: "aaa", expected: "0-3" },
+    // Counted repetition, and braces that are not a count
+    Case { pattern: "a{2,3}", haystack: "aaaa", expected: "0-3" },
+    Case { pattern: "a{2}", haystack: "aaaaa", expected: "0-2 2-4" },
+    Case { pattern: "a{2,}", haystack: "aaaaa", expected: "0-5" },
+    Case { pattern: "a{,2}", haystack: "aaa", expected: "0-2 2-3" },
+    Case { pattern: "a{0}b", haystack: "ab", expected: "1-2" },
+    Case { pattern: "x{", haystack: "x{", expected: "0-2" },
+    Case { pattern: "{", haystack: "a{", expected: "1-2" },
+    Case { pattern: "a{1", haystack: "a{1", expected: "0-3" },
+    Case { pattern: "a{x}", haystack: "a{x}", expected: "0-4" },
+    Case { pattern: "a{,}", haystack: "a{,}", expected: "0-4" },
+    // Dot and newlines
+    Case { pattern: "a.c", haystack: "a\nc abc", expected: "4-7" },
+    Case { pattern: "(?s)a.c", haystack: "a\nc", expected: "0-3" },
+    Case { pattern: ".", haystack: "\u{e9}\u{4e16}", expected: "0-2 2-5" },
+    Case { pattern: "\\N+", haystack: "ab\ncd", expected: "0-2 3-5" },
+    // Anchors
+    Case { pattern: "^a", haystack: "aa\na", expected: "0-1" },
+    Case { pattern: "(?m)^a", haystack: "aa\na", expected: "0-1 3-4" },
+    Case { pattern: "a$", haystack: "aa\na", expected: "3-4" },
+    Case { pattern: "a$", haystack: "a\n", expected: "" },
+    Case { pattern: "(?m)a$", haystack: "a\na", expected: "0-1 2-3" },
+    Case { pattern: "$", haystack: "a\n", expected: "2-2" },
+    Case { pattern: "(?m)$", haystack: "a\nb", expected: "1-1 3-3" },
+    Case { pattern: "a\\Z", haystack: "a\n", expected: "0-1" },
+    Case { pattern: "\\Z", haystack: "ab\n", expected: "2-2 3-3" },
+    Case { pattern: "\\Aa", haystack: "aa", expected: "0-1" },
+    Case { pattern: "a\\z", haystack: "a\n", expected: "" },
+    // Word boundaries
+    Case { pattern: "\\bfoo\\b", haystack: "foo foobar barfoo foo", expected: "0-3 18-21" },
+    Case { pattern: "\\Bo\\B", haystack: "foo bob", expected: "1-2 5-6" },
+    Case { pattern: "\\b\u{e9}", haystack: "\u{e9}t\u{e9}", expected: "0-2" },
+    Case { pattern: "(?-u:\\b)x", haystack: "\u{e9}x", expected: "2-3" },
+    Case { pattern: "\\bx", haystack: "\u{e9}x", expected: "" },
+    // Perl classes, Unicode and ASCII
+    Case { pattern: "\\d+", haystack: "x\u{661}\u{662}\u{663}9", expected: "1-8" },
+    Case { pattern: "(?-u)\\d+", haystack: "x\u{661}9", expected: "3-4" },
+    Case { pattern: "\\w+", haystack: "h\u{e9}llo_1 \u{4e16}\u{754c}", expected: "0-8 9-15" },
+    Case { pattern: "(?-u)\\w+", haystack: "h\u{e9}llo", expected: "0-1 3-6" },
+    Case { pattern: "\\s+", haystack: "a\u{a0}\u{2003}b", expected: "1-6" },
+    Case { pattern: "\\W", haystack: "a-\u{e9}", expected: "1-2" },
+    Case { pattern: "\\h+", haystack: "a \t\u{a0}b", expected: "1-5" },
+    Case { pattern: "\\v", haystack: "a\nb\u{2028}", expected: "1-2 3-6" },
+    Case { pattern: "\\H", haystack: " a", expected: "1-2" },
+    // Unicode properties
+    Case { pattern: "\\p{Greek}+", haystack: "abc \u{3b1}\u{3b2}\u{3b3} def", expected: "4-10" },
+    Case { pattern: "\\p{Lu}", haystack: "aBc", expected: "1-2" },
+    Case { pattern: "\\pL+", haystack: "h\u{e9}llo w\u{f6}rld", expected: "0-6 7-13" },
+    Case { pattern: "\\PL+", haystack: "ab12", expected: "2-4" },
+    Case { pattern: "\\p{^L}+", haystack: "ab12", expected: "2-4" },
+    Case { pattern: "\\p{Script=Greek}", haystack: "a\u{3b2}", expected: "1-3" },
+    Case { pattern: "\\p{sc:Grek}", haystack: "a\u{3b2}", expected: "1-3" },
+    Case { pattern: "\\p{IsGreek}", haystack: "a\u{3b2}", expected: "1-3" },
+    Case { pattern: "\\p{ greek }", haystack: "a\u{3b2}", expected: "1-3" },
+    Case { pattern: "\\p{gc=Nd}", haystack: "a5", expected: "1-2" },
+    Case { pattern: "\\p{Decimal_Number}", haystack: "a5", expected: "1-2" },
+    Case { pattern: "\\p{Alphabetic}+", haystack: "1ab\u{3b1}2", expected: "1-5" },
+    Case { pattern: "\\p{Emoji_Presentation}", haystack: "a\u{1f600}", expected: "1-5" },
+    Case { pattern: "\\p{Any}", haystack: "\u{10ffff}", expected: "0-4" },
+    Case { pattern: "\\p{ASCII}+", haystack: "ab\u{e9}", expected: "0-2" },
+    // Case-insensitive matching (simple case folding)
+    Case { pattern: "(?i)abc", haystack: "xAbC", expected: "1-4" },
+    Case { pattern: "(?i)k", haystack: "kK\u{212a}", expected: "0-1 1-2 2-5" },
+    Case { pattern: "(?i)\u{df}", haystack: "\u{1e9e}", expected: "0-3" },
+    Case { pattern: "(?i)\u{3c3}", haystack: "\u{3a3}\u{3c2}", expected: "0-2 2-4" },
+    Case { pattern: "(?i)[a-z]+", haystack: "ABC", expected: "0-3" },
+    Case { pattern: "(?i)\\p{Lu}", haystack: "a", expected: "0-1" },
+    Case { pattern: "(?i)[^a]", haystack: "aAb", expected: "2-3" },
+    Case { pattern: "(?i-u)k", haystack: "\u{212a}K", expected: "3-4" },
+    Case { pattern: "a(?i)b|c", haystack: "aB C", expected: "0-2 3-4" },
+    Case { pattern: "(?i:a)b", haystack: "Ab AB", expected: "0-2" },
+    // Bracketed classes
+    Case { pattern: "[a-c&&b-d]+", haystack: "abcd", expected: "1-3" },
+    Case { pattern: "[a-z--aeiou]+", haystack: "hello", expected: "0-1 2-4" },
+    Case { pattern: "[\\w~~\\d]+", haystack: "ab12cd", expected: "0-2 4-6" },
+    Case { pattern: "[a[bc]]+", haystack: "abcd", expected: "0-3" },
+    Case { pattern: "[]a]+", haystack: "a]]b", expected: "0-3" },
+    Case { pattern: "[^]a]", haystack: "]ab", expected: "2-3" },
+    Case { pattern: "[a-]+", haystack: "a-b", expected: "0-2" },
+    Case { pattern: "[-a]+", haystack: "a-b", expected: "0-2" },
+    Case { pattern: "[[:alpha:]]+", haystack: "ab12", expected: "0-2" },
+    Case { pattern: "[[:^digit:]]+", haystack: "a1b", expected: "0-1 2-3" },
+    Case { pattern: "[\\d\\s]+", haystack: "a1 2b", expected: "1-4" },
+    Case { pattern: "[\\b]", haystack: "a\u{8}", expected: "1-2" },
+    Case { pattern: "[\u{3b1}-\u{3c9}]+", haystack: "a\u{3b1}\u{3c9}", expected: "1-5" },
+    // Escapes
+    Case { pattern: "\\x41\\x{263A}\\N{U+263A}", haystack: "A\u{263a}\u{263a}", expected: "0-7" },
+    Case { pattern: "\\o{101}\\cA\\e", haystack: "A\u{1}\u{1b}", expected: "0-3" },
+    Case { pattern: "\\Q.*\\E+", haystack: ".**", expected: "0-3" },
+    Case { pattern: "\\.\\+\\(", haystack: "a.+(", expected: "1-4" },
+    // Prefilter edges: candidates that fail, overlap, or run off the end
+    Case { pattern: "aab", haystack: "aaab", expected: "1-4" },
+    Case { pattern: "Sherlock", haystack: "SSherlockSherloc", expected: "1-9" },
+    Case { pattern: "abc", haystack: "xxab", expected: "" },
+    Case { pattern: "ab", haystack: "xab", expected: "1-3" },
+    Case { pattern: "[xy]z", haystack: "xxyz", expected: "2-4" },
+    Case { pattern: "\u{3b1}\u{3b2}", haystack: "\u{3b1}\u{3b1}\u{3b2}", expected: "2-6" },
+    Case { pattern: "\\d{3}", haystack: "12a345", expected: "3-6" },
+    // Verbose mode
+    Case { pattern: "(?x) a b # comment\n c", haystack: "abc", expected: "0-3" },
+    Case { pattern: "(?x)[ ]", haystack: "a b", expected: "1-2" },
+];
+
+private function spans(re: &Regex, haystack: Str) -> String {
+    mut out: String = String::new();
+    mut first: boolean = true;
+    for (m in re.find_iter(haystack)) {
+        if (!first) { out.push_byte(0x20); }
+        first = false;
+        out.push(m.start());
+        out.push_byte(0x2D);
+        out.push(m.end());
+    }
+    return out;
+}
+
+![test]
+function every_case_matches_as_listed() -> Result<(), TestError> {
+    mut failures: i64 = 0;
+    mut report: String = String::new();
+    for (mut i: i64 = 0; i < 106; i++) {
+        const case: Case = CASES[i];
+        const pattern: Str = Str::new(case.pattern);
+        const haystack: Str = Str::new(case.haystack);
+        match (Regex::new(pattern)) {
+            Result::Err(error) => {
+                failures = failures + 1;
+                report.push(f"\n  {pattern:?}: refused: {error.describe()}");
+            }
+            Result::Ok(re) => {
+                const got: String = spans(&re, haystack);
+                if (got.as_str() != Str::new(case.expected)) {
+                    failures = failures + 1;
+                    report.push(f"\n  {pattern:?} on {haystack:?}: expected [{case.expected}], got [{got.as_str()}]");
+                }
+            }
+        }
+    }
+    if (failures > 0) {
+        mut message: String = String::new();
+        message.push(f"{failures} cases failed:");
+        message.push(report.as_str());
+        return bail(message.as_str());
+    }
+    return Result::Ok(());
+}

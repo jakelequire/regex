@@ -1,0 +1,370 @@
+///! text: regular expressions over `Str`.
+///!
+///! A `Regex` here matches only valid UTF-8, and every match starts and
+///! ends between whole scalars, so each match is a `Str` of its own. A
+///! pattern that could match anything else - `(?-u:\xFF)`, or `(?-u:.)`,
+///! which reads single bytes - is refused when it is compiled. To search
+///! arbitrary bytes, use `regex::bytes`, which this module presents over
+///! `Str`.
+///!
+///! Positions are byte offsets into the haystack. A `Match`, a `Captures`
+///! and every iterator borrow the haystack (and an iterator the regex),
+///! which must outlive them, as for any `Str`.
+
+namespace regex::text;
+
+import std::core::option::{ Option };
+import std::core::result::{ Result };
+import std::core::iter::{ Iterator };
+import std::collections::array::{ Array };
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import std::fmt::display::{ Display, Debug, Formatter };
+import std::fmt::error::{ FmtError };
+import regex::error::{ Error };
+import regex::engine::{ Config };
+import regex::bytes;
+import std::core::mem;
+
+/// A compiled regular expression over text.
+public type struct Regex {
+    private inner: bytes::Regex;
+
+    /// Compile `pattern` with the default options. See `RegexBuilder` for
+    /// the others.
+    public static new(pattern: Str) -> Result<Regex, Error> {
+        const config: Config = Config::default_for(true);
+        return Result::Ok(Regex { inner: bytes::Regex::with_config(pattern, &config)? });
+    }
+
+    /// The pattern this regex was compiled from.
+    public as_str(&this) -> Str {
+        return this.inner.as_str();
+    }
+
+    /// True when the pattern matches somewhere in `haystack`. Faster than
+    /// `find`: the search stops at the first match it sees.
+    public is_match(&this, haystack: Str) -> boolean {
+        return this.inner.is_match(haystack.as_bytes());
+    }
+
+    /// True when the pattern matches somewhere at or after byte `start`.
+    /// Assertions see the whole haystack: `^` does not match at `start`
+    /// unless `start` is 0.
+    public is_match_at(&this, haystack: Str, start: i64) -> boolean {
+        return this.inner.is_match_at(haystack.as_bytes(), start);
+    }
+
+    /// The leftmost match in `haystack`: the first position where the
+    /// pattern matches, and the match there a backtracking engine would
+    /// choose.
+    public find(&this, haystack: Str) -> Option<Match> {
+        return Match::of(haystack, this.inner.find(haystack.as_bytes()));
+    }
+
+    /// The leftmost match at or after byte `start`, as `is_match_at` reads it.
+    public find_at(&this, haystack: Str, start: i64) -> Option<Match> {
+        return Match::of(haystack, this.inner.find_at(haystack.as_bytes(), start));
+    }
+
+    /// Every successive non-overlapping match, left to right. An empty
+    /// match directly after the previous match is skipped, and after an
+    /// empty match the search moves on one scalar.
+    public find_iter(&this, haystack: Str) -> Matches {
+        return Matches { inner: this.inner.find_iter(haystack.as_bytes()), haystack: haystack };
+    }
+
+    /// The leftmost match with the span of every capture group.
+    public captures(&this, haystack: Str) -> Option<Captures> {
+        return Captures::of(haystack, this.inner.captures(haystack.as_bytes()));
+    }
+
+    /// `captures`, for a match at or after byte `start`.
+    public captures_at(&this, haystack: Str, start: i64) -> Option<Captures> {
+        return Captures::of(haystack, this.inner.captures_at(haystack.as_bytes(), start));
+    }
+
+    /// The captures of every successive non-overlapping match.
+    public captures_iter(&this, haystack: Str) -> CaptureMatches {
+        return CaptureMatches { inner: this.inner.captures_iter(haystack.as_bytes()), haystack: haystack };
+    }
+
+    /// The text between successive matches. A haystack with no match is
+    /// one piece; matches at the edges give empty pieces there.
+    public split(&this, haystack: Str) -> Split {
+        return Split { inner: this.inner.split(haystack.as_bytes()) };
+    }
+
+    /// `split`, ending after at most `limit` pieces: the last holds the rest
+    /// of the haystack. A limit of 0 yields nothing.
+    public splitn(&this, haystack: Str, limit: i64) -> Split {
+        return Split { inner: this.inner.splitn(haystack.as_bytes(), limit) };
+    }
+
+    /// `haystack` with its leftmost match replaced by `replacement`,
+    /// expanded as `Captures.expand` describes.
+    public replace(&this, haystack: Str, replacement: Str) -> String {
+        return this.replacen(haystack, 1, replacement);
+    }
+
+    /// `haystack` with every match replaced by `replacement`.
+    public replace_all(&this, haystack: Str, replacement: Str) -> String {
+        return this.replacen(haystack, -1, replacement);
+    }
+
+    /// `haystack` with its first `limit` matches replaced; a negative limit
+    /// replaces them all.
+    public replacen(&this, haystack: Str, limit: i64, replacement: Str) -> String {
+        const replaced: Array<u8> = this.inner.replacen(haystack.as_bytes(), limit, replacement);
+        return String::from_str(Str::from(replaced.as_slice()));
+    }
+
+    /// The number of capture groups, the whole match (group 0) included.
+    public captures_length(&this) -> i64 {
+        return this.inner.captures_length();
+    }
+
+    /// The name of group `index`, if it has one.
+    public capture_name(&this, index: i64) -> Option<Str> {
+        return this.inner.capture_name(index);
+    }
+
+    /// The index of the group named `name`.
+    public capture_index(&this, name: Str) -> Option<i64> {
+        return this.inner.capture_index(name);
+    }
+}
+
+implement trait Display for struct Regex {
+    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+        return f.write_str(this.inner.as_str());
+    }
+}
+
+implement trait Debug for struct Regex {
+    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+        f.write_str(Str::new("Regex("))?;
+        f.write_str(this.inner.as_str())?;
+        return f.write_str(Str::new(")"));
+    }
+}
+
+/// Options for compiling a `Regex`, each a flag the pattern itself could
+/// also set, plus the limits. Every setter takes and returns the builder,
+/// so options chain: `RegexBuilder::new(p).case_insensitive(true).build()`.
+public type struct RegexBuilder {
+    private pattern: String;
+    private config: Config;
+
+    public static new(pattern: Str) -> RegexBuilder {
+        return RegexBuilder { pattern: String::from_str(pattern), config: Config::default_for(true) };
+    }
+
+    /// Compile the pattern with these options.
+    public build(&this) -> Result<Regex, Error> {
+        return Result::Ok(Regex { inner: bytes::Regex::with_config(this.pattern.as_str(), &this.config)? });
+    }
+
+    /// `i`: letters match their other cases (Unicode simple case folding).
+    public case_insensitive(mut this, yes: boolean) -> RegexBuilder {
+        this.config.flags.case_insensitive = yes;
+        return this;
+    }
+
+    /// `m`: `^` and `$` also match at the start and end of each line.
+    public multi_line(mut this, yes: boolean) -> RegexBuilder {
+        this.config.flags.multi_line = yes;
+        return this;
+    }
+
+    /// `s`: `.` matches `\n` too.
+    public dot_matches_new_line(mut this, yes: boolean) -> RegexBuilder {
+        this.config.flags.dot_matches_new_line = yes;
+        return this;
+    }
+
+    /// `U`: repetitions are lazy, and a following `?` makes one greedy.
+    public swap_greed(mut this, yes: boolean) -> RegexBuilder {
+        this.config.flags.swap_greed = yes;
+        return this;
+    }
+
+    /// `x`: whitespace is ignored and `#` comments run to the end of the
+    /// line, outside classes.
+    public ignore_whitespace(mut this, yes: boolean) -> RegexBuilder {
+        this.config.flags.ignore_whitespace = yes;
+        return this;
+    }
+
+    /// `u`: classes and case folding are Unicode-aware (the default). With
+    /// it off, `\w`, `\d`, `\s` and `\b` are ASCII.
+    public unicode(mut this, yes: boolean) -> RegexBuilder {
+        this.config.flags.unicode = yes;
+        return this;
+    }
+
+    /// The most memory, in bytes, the compiled automaton may hold
+    /// (default 10 MiB). Large Unicode classes under large counted
+    /// repetitions are what reach it.
+    public size_limit(mut this, bytes: i64) -> RegexBuilder {
+        this.config.size_limit = bytes;
+        return this;
+    }
+
+    /// How deeply groups and classes may nest (default 250).
+    public nest_limit(mut this, limit: u32) -> RegexBuilder {
+        this.config.nest_limit = limit;
+        return this;
+    }
+}
+
+/// One match: a span of the haystack.
+public type struct Match {
+    private haystack: Str;
+    private start_offset: i64;
+    private end_offset: i64;
+
+    /// The text view of a byte match found in `haystack`'s bytes.
+    private static of(haystack: Str, found: Option<bytes::Match>) -> Option<Match> {
+        return match (found) {
+            Option::Some(m) => { Option::Some(Match { haystack: haystack, start_offset: m.start(), end_offset: m.end() }) }
+            Option::None => { Option::None }
+        };
+    }
+
+    /// Byte offset of the match's start.
+    public start(&this) -> i64 { return this.start_offset; }
+
+    /// Byte offset just past the match's end.
+    public end(&this) -> i64 { return this.end_offset; }
+
+    public length(&this) -> i64 { return this.end_offset - this.start_offset; }
+
+    public is_empty(&this) -> boolean { return this.start_offset == this.end_offset; }
+
+    /// The matched text.
+    public as_str(&this) -> Str {
+        return this.haystack.sub_bytes(this.start_offset, this.end_offset);
+    }
+}
+
+implement trait Display for struct Match {
+    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+        return f.write_str(this.as_str());
+    }
+}
+
+implement trait Debug for struct Match {
+    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+        return f.write(f"Match({this.start_offset}..{this.end_offset}, {this.as_str():?})");
+    }
+}
+
+/// The groups of one match. Group 0 is the whole match; a group that did
+/// not take part in the match (`(a)|b` matching `b`) has no span.
+public type struct Captures {
+    private inner: bytes::Captures;
+    private haystack: Str;
+
+    private static of(haystack: Str, found: Option<bytes::Captures>) -> Option<Captures> {
+        // Released explicitly when empty, so `found` is moved on every path.
+        return match (found) {
+            Option::Some(caps) => { Option::Some(Captures { inner: caps, haystack: haystack }) }
+            Option::None => {
+                mem::drop(found);
+                Option::None
+            }
+        };
+    }
+
+    /// Group `index`, when it took part in the match.
+    public get(&this, index: i64) -> Option<Match> {
+        return Match::of(this.haystack, this.inner.get(index));
+    }
+
+    /// The group called `name`, when it exists and took part in the match.
+    public name(&this, name: Str) -> Option<Match> {
+        return Match::of(this.haystack, this.inner.name(name));
+    }
+
+    /// The whole match, group 0.
+    public whole(&this) -> Match {
+        return this.get(0).unwrap();
+    }
+
+    /// The number of groups, including those that did not take part.
+    public length(&this) -> i64 {
+        return this.inner.length();
+    }
+
+    /// Append `template` with every group reference replaced by that
+    /// group's text: `$1` or `${1}` by number, `$name` or `${name}` by
+    /// name, and `$$` for a dollar sign. A reference starting with a digit
+    /// takes only digits (`$1a` is group 1, then `a`); a group that does
+    /// not exist or did not take part expands to nothing.
+    public expand(&this, template: Str, out: mut &String) -> void {
+        mut expanded: Array<u8> = Array::new();
+        this.inner.expand(template, &expanded);
+        out.push(Str::from(expanded.as_slice()));
+    }
+}
+
+/// Successive non-overlapping matches; see `Regex.find_iter`.
+public type struct Matches {
+    private inner: bytes::Matches;
+    private haystack: Str;
+}
+
+implement trait Iterator<Match> for struct Matches {
+    next(mut &this) -> Option<Match> {
+        return Match::of(this.haystack, this.inner.next());
+    }
+}
+
+/// The captures of successive non-overlapping matches; see
+/// `Regex.captures_iter`.
+public type struct CaptureMatches {
+    private inner: bytes::CaptureMatches;
+    private haystack: Str;
+}
+
+implement trait Iterator<Captures> for struct CaptureMatches {
+    next(mut &this) -> Option<Captures> {
+        return Captures::of(this.haystack, this.inner.next());
+    }
+}
+
+/// The text between matches; see `Regex.split` and `Regex.splitn`. Each
+/// piece lies between whole scalars, so it is a `Str` of its own.
+public type struct Split {
+    private inner: bytes::Split;
+}
+
+implement trait Iterator<Str> for struct Split {
+    next(mut &this) -> Option<Str> {
+        return match (this.inner.next()) {
+            Option::Some(piece) => { Option::Some(Str::from(piece)) }
+            Option::None => { Option::None }
+        };
+    }
+}
+
+/// `text` with every character that has a meaning in a pattern escaped,
+/// so that the result matches `text` literally.
+public function escape(text: Str) -> String {
+    mut out: String = String::with_capacity(text.length());
+    for (byte in text.as_bytes()) {
+        if (is_meta_byte(byte)) { out.push_byte(0x5C); }
+        out.push_byte(byte);
+    }
+    return out;
+}
+
+/// True for the ASCII characters a pattern gives a meaning: the operators,
+/// and `#` and the space, which verbose mode gives one.
+public function is_meta_byte(byte: u8) -> boolean {
+    return byte == 0x5C || byte == 0x2E || byte == 0x2B || byte == 0x2A || byte == 0x3F
+        || byte == 0x28 || byte == 0x29 || byte == 0x7C || byte == 0x5B || byte == 0x5D
+        || byte == 0x7B || byte == 0x7D || byte == 0x5E || byte == 0x24 || byte == 0x23
+        || byte == 0x26 || byte == 0x2D || byte == 0x7E || byte == 0x20;
+}

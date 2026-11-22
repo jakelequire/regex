@@ -1,0 +1,304 @@
+///! ClassRanges: a set of scalar values or bytes, as sorted ranges.
+///!
+///! The canonical form is sorted by start, with no two ranges overlapping
+///! or touching, so two sets are equal exactly when their range lists are.
+///! Every operation leaves the set canonical. The same type holds a class
+///! over Unicode scalars (values up to 0x10FFFF) and a class over bytes
+///! (values up to 0xFF); which one a class is, is decided by its owner.
+
+namespace regex::syntax::intervals;
+
+import std::core::option::{ Option };
+import std::core::slice::{ Slice };
+import std::collections::array::{ Array };
+import std::core::mem;
+import regex::unicode;
+
+/// One inclusive range of values.
+internal type struct Interval {
+    start: u32;
+    end: u32;
+}
+
+/// The largest Unicode scalar value.
+internal const MAX_SCALAR: u32 = 0x10FFFF;
+/// The largest byte value.
+internal const MAX_BYTE: u32 = 0xFF;
+/// The surrogate block, which holds no scalar values.
+internal const SURROGATE_START: u32 = 0xD800;
+internal const SURROGATE_END: u32 = 0xDFFF;
+
+private function interval_less(a: &Interval, b: &Interval) -> boolean {
+    if (a.start != b.start) { return a.start < b.start; }
+    return a.end < b.end;
+}
+
+internal type struct ClassRanges {
+    private intervals: Array<Interval>;
+
+    internal static new() -> ClassRanges {
+        return ClassRanges { intervals: Array::new() };
+    }
+
+    /// The set holding exactly `[start, end]`.
+    internal static range(start: u32, end: u32) -> ClassRanges {
+        mut set: ClassRanges = ClassRanges::new();
+        set.intervals.push(Interval { start: start, end: end });
+        return set;
+    }
+
+    /// The set described by a generated table of start/end pairs, which
+    /// is canonical already.
+    internal static from_table(pairs: Slice<u32>) -> ClassRanges {
+        mut set: ClassRanges = ClassRanges::new();
+        set.intervals.reserve(pairs.length() / 2);
+        mut i: i64 = 0;
+        while (i + 1 < pairs.length()) {
+            set.intervals.push(Interval { start: pairs[i], end: pairs[i + 1] });
+            i = i + 2;
+        }
+        return set;
+    }
+
+    internal copy(&this) -> ClassRanges {
+        mut set: ClassRanges = ClassRanges::new();
+        set.intervals.append(this.intervals.as_slice());
+        return set;
+    }
+
+    internal length(&this) -> i64 {
+        return this.intervals.length();
+    }
+
+    internal is_empty(&this) -> boolean {
+        return this.intervals.length() == 0;
+    }
+
+    internal get(&this, index: i64) -> Interval {
+        return this.intervals[index];
+    }
+
+    /// The intervals, in order.
+    internal as_slice(&this) -> Slice<Interval> {
+        return this.intervals.as_slice();
+    }
+
+    /// The smallest value in the set; the set must not be empty.
+    internal minimum(&this) -> u32 {
+        return this.intervals[0].start;
+    }
+
+    /// The largest value in the set; the set must not be empty.
+    internal maximum(&this) -> u32 {
+        return this.intervals[this.intervals.length() - 1].end;
+    }
+
+    /// The one value the set holds, when it holds exactly one.
+    internal single_value(&this) -> Option<u32> {
+        if (this.intervals.length() != 1) { return Option::None; }
+        const only: Interval = this.intervals[0];
+        if (only.start != only.end) { return Option::None; }
+        return Option::Some(only.start);
+    }
+
+    internal contains(&this, value: u32) -> boolean {
+        mut low: i64 = 0;
+        mut high: i64 = this.intervals.length();
+        while (low < high) {
+            const middle: i64 = low + (high - low) / 2;
+            const interval: Interval = this.intervals[middle];
+            if (value < interval.start) {
+                high = middle;
+            } else if (value > interval.end) {
+                low = middle + 1;
+            } else {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Add `[start, end]`. Call `canonicalize` before reading the set again.
+    internal push(mut &this, start: u32, end: u32) -> void {
+        this.intervals.push(Interval { start: start, end: end });
+    }
+
+    /// Sort the ranges and merge any that overlap or touch.
+    internal canonicalize(mut &this) -> void {
+        if (this.intervals.length() <= 1) { return; }
+        this.intervals.sort_by(interval_less);
+        mut write: i64 = 0;
+        mut read: i64 = 1;
+        const count: i64 = this.intervals.length();
+        while (read < count) {
+            const current: Interval = this.intervals[write];
+            const next: Interval = this.intervals[read];
+            // `current.end + 1` cannot overflow: values stop at 0x10FFFF.
+            if (next.start <= current.end + 1) {
+                if (next.end > current.end) {
+                    this.intervals[write] = Interval { start: current.start, end: next.end };
+                }
+            } else {
+                write = write + 1;
+                this.intervals[write] = next;
+            }
+            read = read + 1;
+        }
+        this.intervals.truncate(write + 1);
+    }
+
+    /// Add every value of `other` to this set.
+    internal union(mut &this, other: &ClassRanges) -> void {
+        this.intervals.append(other.intervals.as_slice());
+        this.canonicalize();
+    }
+
+    /// Keep only the values also in `other`.
+    internal intersect(mut &this, other: &ClassRanges) -> void {
+        mut result: Array<Interval> = Array::new();
+        mut a: i64 = 0;
+        mut b: i64 = 0;
+        while (a < this.intervals.length() && b < other.intervals.length()) {
+            const left: Interval = this.intervals[a];
+            const right: Interval = other.intervals[b];
+            const start: u32 = if (left.start > right.start) { left.start } else { right.start };
+            const end: u32 = if (left.end < right.end) { left.end } else { right.end };
+            if (start <= end) {
+                result.push(Interval { start: start, end: end });
+            }
+            if (left.end < right.end) { a = a + 1; } else { b = b + 1; }
+        }
+        mem::swap(&this.intervals, &result);
+    }
+
+    /// Remove every value that is in `other`.
+    internal difference(mut &this, other: &ClassRanges) -> void {
+        mut result: Array<Interval> = Array::new();
+        mut b: i64 = 0;
+        for (mut a: i64 = 0; a < this.intervals.length(); a++) {
+            mut start: u32 = this.intervals[a].start;
+            const end: u32 = this.intervals[a].end;
+            mut alive: boolean = true;
+            while (alive && b < other.intervals.length() && other.intervals[b].start <= end) {
+                const cut: Interval = other.intervals[b];
+                if (cut.end < start) {
+                    b = b + 1;
+                    continue;
+                }
+                if (cut.start > start) {
+                    result.push(Interval { start: start, end: cut.start - 1 });
+                }
+                if (cut.end >= end) {
+                    alive = false;
+                } else {
+                    start = cut.end + 1;
+                    b = b + 1;
+                }
+            }
+            if (alive) {
+                result.push(Interval { start: start, end: end });
+            }
+        }
+        mem::swap(&this.intervals, &result);
+    }
+
+    /// Keep the values in exactly one of this set and `other`.
+    internal symmetric_difference(mut &this, other: &ClassRanges) -> void {
+        mut both: ClassRanges = this.copy();
+        both.intersect(other);
+        this.union(other);
+        this.difference(&both);
+    }
+
+    /// Replace the set by its complement within `[0, maximum]`. A class over
+    /// scalars passes `MAX_SCALAR`, and its complement leaves out the
+    /// surrogates, which are no scalar values.
+    internal negate(mut &this, maximum: u32) -> void {
+        mut result: Array<Interval> = Array::new();
+        mut next: u32 = 0;
+        mut covered_to_end: boolean = false;
+        for (mut i: i64 = 0; i < this.intervals.length(); i++) {
+            const interval: Interval = this.intervals[i];
+            if (interval.start > next) {
+                result.push(Interval { start: next, end: interval.start - 1 });
+            }
+            if (interval.end >= maximum) {
+                covered_to_end = true;
+            } else {
+                next = interval.end + 1;
+            }
+        }
+        if (!covered_to_end) {
+            result.push(Interval { start: next, end: maximum });
+        }
+        mem::swap(&this.intervals, &result);
+        if (maximum == MAX_SCALAR) {
+            const surrogates: ClassRanges = ClassRanges::range(SURROGATE_START, SURROGATE_END);
+            this.difference(&surrogates);
+        }
+    }
+
+    /// Add, for every scalar in the set, each scalar that simple case
+    /// folding makes equivalent to it.
+    internal fold_unicode(mut &this) -> void {
+        const keys: Slice<u32> = unicode::fold_keys();
+        const original: i64 = this.intervals.length();
+        for (mut i: i64 = 0; i < original; i++) {
+            const interval: Interval = this.intervals[i];
+            mut position: i64 = lower_bound(keys, interval.start);
+            while (position < keys.length() && keys[position] <= interval.end) {
+                const equivalents: Slice<u32> = unicode::fold_equivalents(position);
+                for (value in equivalents) {
+                    this.intervals.push(Interval { start: value, end: value });
+                }
+                position = position + 1;
+            }
+        }
+        this.canonicalize();
+    }
+
+    /// Add the other ASCII case of every ASCII letter in the set.
+    internal fold_ascii(mut &this) -> void {
+        const lower: ClassRanges = ClassRanges::range(0x61, 0x7A);
+        const upper: ClassRanges = ClassRanges::range(0x41, 0x5A);
+        mut lowers: ClassRanges = this.copy();
+        lowers.intersect(&lower);
+        mut uppers: ClassRanges = this.copy();
+        uppers.intersect(&upper);
+        for (mut i: i64 = 0; i < lowers.intervals.length(); i++) {
+            const interval: Interval = lowers.intervals[i];
+            this.intervals.push(Interval { start: interval.start - 32, end: interval.end - 32 });
+        }
+        for (mut i: i64 = 0; i < uppers.intervals.length(); i++) {
+            const interval: Interval = uppers.intervals[i];
+            this.intervals.push(Interval { start: interval.start + 32, end: interval.end + 32 });
+        }
+        this.canonicalize();
+    }
+
+    /// True when the two sets hold the same values.
+    internal same_as(&this, other: &ClassRanges) -> boolean {
+        if (this.intervals.length() != other.intervals.length()) { return false; }
+        for (mut i: i64 = 0; i < this.intervals.length(); i++) {
+            const a: Interval = this.intervals[i];
+            const b: Interval = other.intervals[i];
+            if (a.start != b.start || a.end != b.end) { return false; }
+        }
+        return true;
+    }
+}
+
+/// The first position in the sorted `values` holding a value `>= target`.
+internal function lower_bound(values: Slice<u32>, target: u32) -> i64 {
+    mut low: i64 = 0;
+    mut high: i64 = values.length();
+    while (low < high) {
+        const middle: i64 = low + (high - low) / 2;
+        if (values[middle] < target) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
+}

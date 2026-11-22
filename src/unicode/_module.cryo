@@ -1,0 +1,162 @@
+///! unicode: property lookup and case folding over the generated tables.
+///!
+///! A property is named the way UTS #18 and the pattern syntax allow:
+///! bare (`\p{Greek}`, `\p{Lu}`, `\p{Alphabetic}`) or as `name=value`
+///! (`\p{Script=Greek}`, `\p{gc:Lu}`). Names compare loosely: case,
+///! spaces, underscores and hyphens are ignored, and so is a leading
+///! "is" (`\p{IsGreek}`). A bare name is tried as a General_Category value,
+///! then as a script (through Script_Extensions), then as a binary
+///! property, which is the order UTS #18 recommends.
+
+namespace regex::unicode;
+
+internal module unicode::tables;
+
+import std::core::option::{ Option };
+import std::core::result::{ Result };
+import std::core::slice::{ Slice };
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import regex::unicode::tables::{ NameIndex };
+import regex::error::{ ErrorKind };
+
+/// The Unicode version the tables were generated from.
+internal function version() -> Str {
+    return Str::new(tables::UNICODE_VERSION);
+}
+
+/// `name` folded for comparison: ASCII lowercase, without spaces,
+/// underscores and hyphens, and without a leading "is".
+internal function normalize_name(name: Str) -> String {
+    mut out: String = String::with_capacity(name.length());
+    for (byte in name.as_bytes()) {
+        if (byte == 0x20 || byte == 0x5F || byte == 0x2D || byte == 0x09) { continue; }
+        out.push_byte(byte.to_ascii_lowercase());
+    }
+    const folded: Str = out.as_str();
+    if (folded.length() > 2 && folded.starts_with(&Str::new("is"))) {
+        return String::from_str(folded.sub_bytes(2, folded.length()));
+    }
+    return out;
+}
+
+/// The entry `normalized` names in `index`, by binary search over its
+/// sorted names.
+private function find_name(index: NameIndex, normalized: Str) -> Option<i64> {
+    mut low: i64 = 0;
+    mut high: i64 = tables::name_count(index);
+    while (low < high) {
+        const middle: i64 = low + (high - low) / 2;
+        const candidate: Str = Str::new(tables::name_at(index, middle));
+        match (candidate.compare(&normalized)) {
+            Ordering::Less    => { low = middle + 1; }
+            Ordering::Greater => { high = middle; }
+            Ordering::Equal   => { return Option::Some(tables::entry_at(index, middle)); }
+        }
+    }
+    return Option::None;
+}
+
+/// The table a `\p{...}` body names. `body` is the text between the
+/// braces (or the single letter of `\pL`).
+internal function property_table(body: Str) -> Result<Slice<u32>, ErrorKind> {
+    mut separator: i64 = -1;
+    for (mut i: i64 = 0; i < body.length(); i++) {
+        const byte: u8 = body.byte_at(i).unwrap();
+        if (byte == 0x3D || byte == 0x3A) { // '=' or ':'
+            separator = i;
+            break;
+        }
+    }
+    if (separator < 0) {
+        const name: String = normalize_name(body);
+        return bare_property(name.as_str());
+    }
+    const property: String = normalize_name(body.sub_bytes(0, separator));
+    const value: String = normalize_name(body.sub_bytes(separator + 1, body.length()));
+    const key: Str = property.as_str();
+    if (key == Str::new("gc") || key == Str::new("generalcategory")) {
+        return match (find_name(NameIndex::GeneralCategory, value.as_str())) {
+            Option::Some(table) => { Result::Ok(tables::table(table)) }
+            Option::None        => { Result::Err(ErrorKind::UnicodePropertyValueNotFound) }
+        };
+    }
+    if (key == Str::new("sc") || key == Str::new("script")) {
+        return match (find_name(NameIndex::Script, value.as_str())) {
+            Option::Some(script) => { Result::Ok(tables::table(tables::script_table(script))) }
+            Option::None         => { Result::Err(ErrorKind::UnicodePropertyValueNotFound) }
+        };
+    }
+    if (key == Str::new("scx") || key == Str::new("scriptextensions")) {
+        return match (find_name(NameIndex::Script, value.as_str())) {
+            Option::Some(script) => { Result::Ok(tables::table(tables::script_extension_table(script))) }
+            Option::None         => { Result::Err(ErrorKind::UnicodePropertyValueNotFound) }
+        };
+    }
+    return Result::Err(ErrorKind::UnicodePropertyNotFound);
+}
+
+private function bare_property(name: Str) -> Result<Slice<u32>, ErrorKind> {
+    match (find_name(NameIndex::GeneralCategory, name)) {
+        Option::Some(table) => { return Result::Ok(tables::table(table)); }
+        Option::None => { }
+    }
+    match (find_name(NameIndex::Script, name)) {
+        Option::Some(script) => { return Result::Ok(tables::table(tables::script_extension_table(script))); }
+        Option::None => { }
+    }
+    match (find_name(NameIndex::Boolean, name)) {
+        Option::Some(table) => { return Result::Ok(tables::table(table)); }
+        Option::None => { }
+    }
+    return Result::Err(ErrorKind::UnicodePropertyNotFound);
+}
+
+/// `\d` in Unicode mode: General_Category Decimal_Number.
+internal function perl_digit() -> Slice<u32> {
+    return tables::table(tables::PERL_DIGIT);
+}
+
+/// `\s` in Unicode mode: White_Space.
+internal function perl_space() -> Slice<u32> {
+    return tables::table(tables::PERL_SPACE);
+}
+
+/// `\w` in Unicode mode: Alphabetic, marks, decimal numbers, connector
+/// punctuation and Join_Control, as UTS #18 defines a word character.
+internal function perl_word() -> Slice<u32> {
+    return tables::table(tables::PERL_WORD);
+}
+
+/// True when `scalar` is a word character in the sense of `\w`.
+internal function is_word_scalar(scalar: u32) -> boolean {
+    // Most text is ASCII: answer it without a search.
+    if (scalar < 0x80) {
+        const byte: u8 = scalar as u8;
+        return byte.is_alpha() || byte.is_digit() || byte == 0x5F;
+    }
+    const pairs: Slice<u32> = perl_word();
+    mut low: i64 = 0;
+    mut high: i64 = pairs.length() / 2;
+    while (low < high) {
+        const middle: i64 = low + (high - low) / 2;
+        if (scalar < pairs[middle * 2]) {
+            high = middle;
+        } else if (scalar > pairs[middle * 2 + 1]) {
+            low = middle + 1;
+        } else {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The scalars with simple case folding equivalents, sorted.
+internal function fold_keys() -> Slice<u32> {
+    return tables::fold_keys();
+}
+
+/// The scalars that fold together with `fold_keys()[position]`.
+internal function fold_equivalents(position: i64) -> Slice<u32> {
+    return tables::fold_equivalents(position);
+}

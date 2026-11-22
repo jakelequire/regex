@@ -1,0 +1,9 @@
+///! syntax: the pattern language, parsed into a normalized tree.
+
+namespace regex::syntax;
+
+internal module {
+    syntax::intervals;
+    syntax::hir;
+    syntax::parser;
+}

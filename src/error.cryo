@@ -1,0 +1,220 @@
+///! Error: why a pattern could not be compiled.
+///!
+///! Every failure is one `ErrorKind` plus the span of the pattern it is
+///! about. `Display` renders the pattern with the span underlined, which is
+///! what a person reading a log wants; programs branch on `kind()`.
+
+namespace regex::error;
+
+import std::core::result::{ Result };
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import std::fmt::display::{ Display, Debug, Formatter };
+import std::fmt::error::{ FmtError };
+
+/// The closed set of reasons a pattern is refused.
+public type enum ErrorKind {
+    /// More capture groups than `MAX_CAPTURE_GROUPS`.
+    CaptureLimitExceeded;
+    /// An escape that has no meaning inside a bracketed class (`[\b]`).
+    ClassEscapeInvalid;
+    /// A range whose start is after its end (`[z-a]`).
+    ClassRangeInvalid;
+    /// A range endpoint that is a class rather than one character (`[\d-z]`).
+    ClassRangeLiteral;
+    /// A bracketed class with no closing `]`.
+    ClassUnclosed;
+    /// A POSIX class name that does not exist (`[[:alfa:]]`).
+    ClassPosixUnrecognized;
+    /// A numeric escape with no digits (`\x{}`).
+    EscapeHexEmpty;
+    /// A numeric escape naming no Unicode scalar value (`\x{D800}`, `\x{110000}`).
+    EscapeHexInvalid;
+    /// A non-digit inside a numeric escape (`\x{12g}`).
+    EscapeHexInvalidDigit;
+    /// A pattern ending in a lone backslash.
+    EscapeUnexpectedEnd;
+    /// An escape the syntax does not define (`\y`).
+    EscapeUnrecognized;
+    /// A flag group with a `-` and no flag after it (`(?i-)`).
+    FlagDanglingNegation;
+    /// A flag written twice in one group (`(?ii)`).
+    FlagDuplicate;
+    /// A second `-` in one flag group (`(?i-m-s)`).
+    FlagRepeatedNegation;
+    /// A pattern ending inside a flag group (`(?i`).
+    FlagUnexpectedEnd;
+    /// A flag letter the syntax does not define (`(?q)`).
+    FlagUnrecognized;
+    /// Two groups with one name.
+    GroupNameDuplicate;
+    /// A named group with an empty name (`(?<>a)`).
+    GroupNameEmpty;
+    /// A group name with a character names may not hold.
+    GroupNameInvalid;
+    /// A pattern ending inside a group name.
+    GroupNameUnexpectedEnd;
+    /// A `(` with no matching `)`.
+    GroupUnclosed;
+    /// A `)` with no matching `(`.
+    GroupUnopened;
+    /// Groups or classes nested deeper than the nest limit.
+    NestLimitExceeded;
+    /// A counted repetition whose minimum is above its maximum (`a{3,2}`).
+    RepetitionCountInvalid;
+    /// A counted repetition above `MAX_REPETITION_COUNT`.
+    RepetitionCountTooLarge;
+    /// A repetition operator with nothing before it to repeat (`*a`, `a**`).
+    RepetitionMissing;
+    /// A `\p` or `\P` escape that is malformed (`\p{`, `\p{}`).
+    UnicodeClassInvalid;
+    /// A `\p{name}` naming no Unicode property.
+    UnicodePropertyNotFound;
+    /// A `\p{name=value}` naming no value of that property.
+    UnicodePropertyValueNotFound;
+    /// A Unicode-only construct used with Unicode mode off (`(?-u:\p{L})`).
+    UnicodeNotAllowed;
+    /// A construct that matches bytes that are not UTF-8, in a pattern
+    /// that must only match UTF-8 (`(?-u:\xFF)` for a text regex).
+    InvalidUtf8;
+    /// A backreference (`\1`, `\k<name>`): it cannot be matched in linear time.
+    UnsupportedBackreference;
+    /// A look-around group (`(?=`, `(?!`, `(?<=`, `(?<!`): it cannot be
+    /// matched in linear time.
+    UnsupportedLookAround;
+    /// An atomic group or possessive repetition (`(?>a)`, `a*+`).
+    UnsupportedAtomic;
+    /// A known escape this library does not implement (`\K`, `\G`, `\X`, `\R`).
+    UnsupportedEscape;
+    /// A recursion, subroutine call, conditional or branch reset group
+    /// (`(?R)`, `(?1)`, `(?(1)a|b)`, `(?|a|b)`).
+    UnsupportedGroup;
+    /// The pattern text itself is not well-formed UTF-8.
+    PatternNotUtf8;
+    /// The compiled program would exceed the size limit.
+    SizeLimitExceeded;
+}
+
+implement enum ErrorKind {
+    /// A one-line description, as the error's `Display` prints it.
+    public describe(&this) -> Str {
+        const text: string = match (this) {
+            ErrorKind::CaptureLimitExceeded         => { "too many capture groups" }
+            ErrorKind::ClassEscapeInvalid           => { "this escape is not valid inside a character class" }
+            ErrorKind::ClassRangeInvalid            => { "invalid character class range: the start is after the end" }
+            ErrorKind::ClassRangeLiteral            => { "a character class range endpoint must be a single character" }
+            ErrorKind::ClassUnclosed                => { "unclosed character class" }
+            ErrorKind::ClassPosixUnrecognized       => { "unrecognized POSIX character class" }
+            ErrorKind::EscapeHexEmpty               => { "numeric escape has no digits" }
+            ErrorKind::EscapeHexInvalid             => { "numeric escape is not a Unicode scalar value" }
+            ErrorKind::EscapeHexInvalidDigit        => { "invalid digit in numeric escape" }
+            ErrorKind::EscapeUnexpectedEnd          => { "pattern ends with an incomplete escape" }
+            ErrorKind::EscapeUnrecognized           => { "unrecognized escape sequence" }
+            ErrorKind::FlagDanglingNegation         => { "flag negation '-' is not followed by a flag" }
+            ErrorKind::FlagDuplicate                => { "duplicate flag" }
+            ErrorKind::FlagRepeatedNegation         => { "flag negation '-' appears more than once" }
+            ErrorKind::FlagUnexpectedEnd            => { "pattern ends inside a flag group" }
+            ErrorKind::FlagUnrecognized             => { "unrecognized flag" }
+            ErrorKind::GroupNameDuplicate           => { "duplicate capture group name" }
+            ErrorKind::GroupNameEmpty               => { "empty capture group name" }
+            ErrorKind::GroupNameInvalid             => { "invalid capture group name" }
+            ErrorKind::GroupNameUnexpectedEnd       => { "pattern ends inside a capture group name" }
+            ErrorKind::GroupUnclosed                => { "unclosed group" }
+            ErrorKind::GroupUnopened                => { "unopened group" }
+            ErrorKind::NestLimitExceeded            => { "groups and classes are nested too deeply" }
+            ErrorKind::RepetitionCountInvalid       => { "invalid repetition count: the minimum is above the maximum" }
+            ErrorKind::RepetitionCountTooLarge      => { "repetition count is too large" }
+            ErrorKind::RepetitionMissing            => { "repetition operator has nothing to repeat" }
+            ErrorKind::UnicodeClassInvalid          => { "invalid Unicode class escape" }
+            ErrorKind::UnicodePropertyNotFound      => { "Unicode property not found" }
+            ErrorKind::UnicodePropertyValueNotFound => { "Unicode property value not found" }
+            ErrorKind::UnicodeNotAllowed            => { "Unicode classes are not allowed when Unicode mode is disabled" }
+            ErrorKind::InvalidUtf8                  => { "pattern can match invalid UTF-8" }
+            ErrorKind::UnsupportedBackreference     => { "backreferences are not supported" }
+            ErrorKind::UnsupportedLookAround        => { "look-around is not supported" }
+            ErrorKind::UnsupportedAtomic            => { "atomic groups and possessive repetitions are not supported" }
+            ErrorKind::UnsupportedEscape            => { "this escape sequence is not supported" }
+            ErrorKind::UnsupportedGroup             => { "recursion, subroutine calls, conditionals and branch reset groups are not supported" }
+            ErrorKind::PatternNotUtf8               => { "pattern is not valid UTF-8" }
+            ErrorKind::SizeLimitExceeded            => { "compiled regex exceeds the size limit" }
+        };
+        return Str::new(text);
+    }
+}
+
+/// A pattern that could not be compiled: what went wrong and where.
+public type struct Error {
+    private kind: ErrorKind;
+    private pattern: String;
+    private start: i64;
+    private end: i64;
+
+    /// An error of `kind` about the bytes `[start, end)` of `pattern`.
+    internal static new(kind: ErrorKind, pattern: Str, start: i64, end: i64) -> Error {
+        return Error { kind: kind, pattern: String::from_str(pattern), start: start, end: end };
+    }
+
+    public kind(&this) -> ErrorKind {
+        return this.kind;
+    }
+
+    /// The pattern the error is about.
+    public pattern(&this) -> Str {
+        return this.pattern.as_str();
+    }
+
+    /// Byte offset in the pattern where the offending part begins.
+    public start(&this) -> i64 {
+        return this.start;
+    }
+
+    /// Byte offset in the pattern just past the offending part.
+    public end(&this) -> i64 {
+        return this.end;
+    }
+
+    /// A one-line description of the error, without the pattern.
+    public describe(&this) -> Str {
+        return this.kind.describe();
+    }
+}
+
+/// The pattern on its own line with the span underlined, then the
+/// description. A pattern spanning several lines (verbose mode) gets the
+/// byte offsets instead, since a caret under one line would point at the
+/// wrong text.
+implement trait Display for struct Error {
+    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+        const pattern: Str = this.pattern.as_str();
+        if (pattern.find_byte(0x0A).is_some() || pattern.find_byte(0x0D).is_some()) {
+            f.write(f"regex parse error at bytes {this.start}..{this.end}: ")?;
+            return f.write_str(this.kind.describe());
+        }
+        f.write_str(Str::new("regex parse error:\n    "))?;
+        f.write_str(pattern)?;
+        f.write_str(Str::new("\n    "))?;
+        // The caret line counts scalars, not bytes, so it lines up under
+        // non-ASCII text in a terminal.
+        mut column: i64 = 0;
+        for (index in pattern.char_indices()) {
+            if (index.first >= this.start) { break; }
+            column = column + 1;
+        }
+        mut width: i64 = 0;
+        for (index in pattern.char_indices()) {
+            if (index.first >= this.start && index.first < this.end) { width = width + 1; }
+        }
+        if (width == 0) { width = 1; }
+        for (mut i: i64 = 0; i < column; i++) { f.write_char(' ')?; }
+        for (mut i: i64 = 0; i < width; i++) { f.write_char('^')?; }
+        f.write_str(Str::new("\nerror: "))?;
+        return f.write_str(this.kind.describe());
+    }
+}
+
+implement trait Debug for struct Error {
+    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+        f.write(f"Error({this.kind.describe()}, {this.start}..{this.end})")?;
+        return Result::Ok(());
+    }
+}

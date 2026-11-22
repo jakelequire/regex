@@ -1,0 +1,88 @@
+///! Nfa: a compiled pattern as a byte-level Thompson automaton.
+///!
+///! Every transition reads one byte; Unicode classes have already been
+///! turned into UTF-8 byte sequences by the compiler. States are small
+///! `Copy` values in one array, naming their successors by index, and the
+///! variable-length parts (a sparse state's transitions, a union's
+///! alternatives) live in side pools.
+///!
+///! Capture slots: group `g` records its start in slot `2g` and its end in
+///! slot `2g + 1`. Group 0 is the whole match.
+
+namespace regex::nfa;
+
+import std::core::slice::{ Slice };
+import std::collections::array::{ Array };
+import regex::syntax::hir::{ Look, GroupInfo };
+
+/// A state identifier: an index into `Nfa::states`.
+internal type StateId = u32;
+
+/// A successor not yet known while the automaton is being built.
+internal const HOLE: u32 = 0xFFFFFFFF;
+
+/// One transition of a sparse state: bytes `low..=high` go to `next`.
+internal type struct Transition {
+    low: u8;
+    high: u8;
+    next: u32;
+}
+
+internal type enum State {
+    /// Go to the successor without reading anything.
+    Empty(u32);
+    /// Read one byte in `low..=high`, then go to the successor.
+    ByteRange(u8, u8, u32);
+    /// Read one byte and follow the transition, among
+    /// `transitions[first .. first + count]` (sorted, disjoint), that holds it.
+    Sparse(u32, u32);
+    /// Try each of `alternates[first .. first + count]`, earlier ones preferred.
+    Union(u32, u32);
+    /// Try the first successor, then the second.
+    BinaryUnion(u32, u32);
+    /// Record the position in slot `slot`, then go to the successor.
+    Capture(u32, u32);
+    /// Go to the successor only where the assertion holds.
+    Look(Look, u32);
+    /// A dead end.
+    Fail;
+    /// The pattern has matched.
+    Match;
+}
+
+internal type struct Nfa {
+    states: Array<State>;
+    transitions: Array<Transition>;
+    alternates: Array<u32>;
+    /// Where an anchored search starts.
+    start: u32;
+    /// Two slots per capture group.
+    slot_count: u32;
+    /// Matches must start and end on UTF-8 boundaries (a text regex).
+    utf8: boolean;
+    /// Some state is a `Look`; searches must evaluate assertions.
+    has_look: boolean;
+
+    internal state(&this, id: u32) -> State {
+        return this.states[id];
+    }
+
+    internal state_count(&this) -> i64 {
+        return this.states.length();
+    }
+
+    internal transition(&this, index: u32) -> Transition {
+        return this.transitions[index];
+    }
+
+    internal alternate(&this, index: u32) -> u32 {
+        return this.alternates[index];
+    }
+
+    /// Bytes of heap the automaton holds, for the size limit.
+    internal memory_usage(&this) -> i64 {
+        return this.states.length() * (sizeof(State) as i64)
+            + this.transitions.length() * (sizeof(Transition) as i64)
+            + this.alternates.length() * 4;
+    }
+}

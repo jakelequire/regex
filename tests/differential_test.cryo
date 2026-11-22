@@ -1,0 +1,85 @@
+///! The differential cases (see differential_cases.cryo): every case's
+///! first match and group spans must be what the generator's reference
+///! engine reported.
+
+![config(testing)]
+namespace RegexTests::Differential;
+
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import std::test::assert::{ bail };
+import std::test::error::{ TestError };
+import regex::{ Regex, Captures, Match };
+import RegexTests::DifferentialCases::{ CASES, CASE_COUNT, Case };
+
+/// Our answer in the generator's notation: `none`, or each group's
+/// `start-end` (`-` for a group that did not take part), space-separated.
+private function describe(re: &Regex, haystack: Str) -> String {
+    mut out: String = String::new();
+    match (re.captures(haystack)) {
+        Option::None => { out.push(Str::new("none")); }
+        Option::Some(caps) => {
+            for (mut i: i64 = 0; i < caps.length(); i++) {
+                if (i > 0) { out.push_byte(0x20); }
+                match (caps.get(i)) {
+                    Option::Some(m) => {
+                        out.push(m.start());
+                        out.push_byte(0x2D);
+                        out.push(m.end());
+                    }
+                    Option::None => { out.push_byte(0x2D); }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/// True when `got` is `expected`, reading a `~` token in `expected` as
+/// any span (see the generator on why such spans go unchecked).
+private function agrees(expected: Str, got: Str) -> boolean {
+    mut wanted = expected.split(&Str::new(" "));
+    mut actual = got.split(&Str::new(" "));
+    loop {
+        const a: Option<Str> = wanted.next();
+        const b: Option<Str> = actual.next();
+        if (a.is_none() || b.is_none()) { return a.is_none() && b.is_none(); }
+        const w: Str = a.unwrap();
+        if (w != Str::new("~") && w != b.unwrap()) { return false; }
+    }
+}
+
+![test]
+function matches_reference_engine() -> Result<(), TestError> {
+    mut failures: i64 = 0;
+    mut report: String = String::new();
+    for (mut i: i64 = 0; i < CASE_COUNT; i++) {
+        const case: Case = CASES[i];
+        const pattern: Str = Str::new(case.pattern);
+        const haystack: Str = Str::new(case.haystack);
+        match (Regex::new(pattern)) {
+            Result::Err(error) => {
+                failures = failures + 1;
+                if (failures <= 20) {
+                    report.push(f"\n  #{i} {pattern:?}: refused: {error.describe()}");
+                }
+            }
+            Result::Ok(re) => {
+                const got: String = describe(&re, haystack);
+                if (!agrees(Str::new(case.expected), got.as_str())) {
+                    failures = failures + 1;
+                    if (failures <= 20) {
+                        report.push(f"\n  #{i} {pattern:?} on {haystack:?}: expected {case.expected}, got {got.as_str()}");
+                    }
+                }
+            }
+        }
+    }
+    if (failures > 0) {
+        mut message: String = String::new();
+        message.push(f"{failures} of {CASE_COUNT} cases differ:");
+        message.push(report.as_str());
+        return bail(message.as_str());
+    }
+    return Result::Ok(());
+}
