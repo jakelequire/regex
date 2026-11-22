@@ -6,10 +6,13 @@ source_paths = ["src"]
 
 # The library a dependent project compiles: src/lib.cryo declares the
 # namespace `regex`, and every file under src/ lies below it. Its version is
-# the repository's tag (v0.1.0, ...), not a key here.
+# the `version` key below, which a dependent's `version = "..."` requirement
+# is checked against; a release's git tag, when there is one, names the same
+# version.
 [lib]
 name       = "regex"
 source_dir = "src"
+version    = "0.1.0"
 
 # `cryo test` needs an executable target; the demo is that target.
 [[bin]]
