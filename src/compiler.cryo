@@ -162,7 +162,7 @@ internal type struct Compiler {
                         SyntaxNode::Repetition(min, max, _, sub) => {
                             tasks.push(Task::Build(id));
                             const copies: u32 = Compiler::repetition_copies(min, max);
-                            for (mut i: u32 = 0; i < copies; i++) { tasks.push(Task::Visit(sub)); }
+                            for (mut copy: u32 = 0; copy < copies; copy++) { tasks.push(Task::Visit(sub)); }
                         }
                     }
                 }
@@ -205,18 +205,18 @@ internal type struct Compiler {
     /// Visit tasks for `children[first .. first + count]`, so that they are
     /// compiled - and their fragments stacked - in order.
     private schedule_children(&this, tree: &SyntaxTree, first: u32, count: u32, tasks: mut &Array<Task>) -> void {
-        mut i: u32 = count;
-        while (i > 0) {
-            i = i - 1;
-            tasks.push(Task::Visit(tree.child(first, i)));
+        mut child_index: u32 = count;
+        while (child_index > 0) {
+            child_index = child_index - 1;
+            tasks.push(Task::Visit(tree.child(first, child_index)));
         }
     }
 
     private compile_literal(mut &this, bytes: &Slice<u8>) -> Result<Fragment, Error> {
         const first: u32 = this.add(State::ByteRange(bytes[0], bytes[0], HOLE))?;
         mut last: u32 = first;
-        for (mut i: i64 = 1; i < bytes.length(); i++) {
-            const next: u32 = this.add(State::ByteRange(bytes[i], bytes[i], HOLE))?;
+        for (mut byte_index: i64 = 1; byte_index < bytes.length(); byte_index++) {
+            const next: u32 = this.add(State::ByteRange(bytes[byte_index], bytes[byte_index], HOLE))?;
             this.patch(last, next);
             last = next;
         }
@@ -225,9 +225,9 @@ internal type struct Compiler {
 
     private build_concatenation(mut &this, parts: &Slice<Fragment>) -> Fragment {
         mut whole: Fragment = parts[0];
-        for (mut i: i64 = 1; i < parts.length(); i++) {
-            this.patch(whole.end, parts[i].start);
-            whole.end = parts[i].end;
+        for (mut part: i64 = 1; part < parts.length(); part++) {
+            this.patch(whole.end, parts[part].start);
+            whole.end = parts[part].end;
         }
         return whole;
     }
@@ -277,8 +277,8 @@ internal type struct Compiler {
         }
         // The required copies, in sequence.
         mut whole: Fragment = this.empty()?;
-        for (mut i: u32 = 0; i < min; i++) {
-            const body: Fragment = copies[i as i64];
+        for (mut copy: u32 = 0; copy < min; copy++) {
+            const body: Fragment = copies[copy as i64];
             this.patch(whole.end, body.start);
             whole.end = body.end;
         }
@@ -292,8 +292,8 @@ internal type struct Compiler {
         }
         // `max - min` optional copies, each able to skip to the end.
         const exit: u32 = this.add(State::Empty(HOLE))?;
-        for (mut i: u32 = min; i < max; i++) {
-            const body: Fragment = copies[i as i64];
+        for (mut copy: u32 = min; copy < max; copy++) {
+            const body: Fragment = copies[copy as i64];
             const optional: u32 = this.split(greedy, body.start)?;
             this.patch(whole.end, optional);
             this.patch(optional, exit);
@@ -384,9 +384,9 @@ internal type struct Compiler {
             }
             State::Sparse(first, count) => {
                 if (transitions.length() != count as i64) { return false; }
-                for (mut i: u32 = 0; i < count; i++) {
-                    const built: Transition = this.automaton.transitions[first + i];
-                    const wanted: Transition = transitions[i as i64];
+                for (mut offset: u32 = 0; offset < count; offset++) {
+                    const built: Transition = this.automaton.transitions[first + offset];
+                    const wanted: Transition = transitions[offset as i64];
                     if (built.low != wanted.low || built.high != wanted.high || built.next != wanted.next) { return false; }
                 }
                 return true;
@@ -411,12 +411,12 @@ internal type struct Compiler {
             };
             this.automaton.states[id] = replacement;
         }
-        for (mut i: i64 = 0; i < this.automaton.transitions.length(); i++) {
-            const transition: Transition = this.automaton.transitions[i];
-            this.automaton.transitions[i] = Transition { low: transition.low, high: transition.high, next: this.resolve(transition.next) };
+        for (mut transition_index: i64 = 0; transition_index < this.automaton.transitions.length(); transition_index++) {
+            const transition: Transition = this.automaton.transitions[transition_index];
+            this.automaton.transitions[transition_index] = Transition { low: transition.low, high: transition.high, next: this.resolve(transition.next) };
         }
-        for (mut i: i64 = 0; i < this.automaton.alternates.length(); i++) {
-            this.automaton.alternates[i] = this.resolve(this.automaton.alternates[i]);
+        for (mut alternate: i64 = 0; alternate < this.automaton.alternates.length(); alternate++) {
+            this.automaton.alternates[alternate] = this.resolve(this.automaton.alternates[alternate]);
         }
         this.automaton.start = this.resolve(this.automaton.start);
     }
@@ -480,10 +480,10 @@ private type struct Utf8Builder {
             prefix = prefix + 1;
         }
         this.finish_below(compiler, prefix)?;
-        for (mut i: i64 = prefix; i < sequence.length; i++) {
-            const last_byte: boolean = i + 1 == sequence.length;
+        for (mut level: i64 = prefix; level < sequence.length; level++) {
+            const last_byte: boolean = level + 1 == sequence.length;
             const next: u32 = if (last_byte) { this.target } else { HOLE };
-            this.pool.push(Transition { low: sequence.low[i], high: sequence.high[i], next: next });
+            this.pool.push(Transition { low: sequence.low[level], high: sequence.high[level], next: next });
             if (!last_byte) {
                 this.levels.push(this.pool.length());
             }

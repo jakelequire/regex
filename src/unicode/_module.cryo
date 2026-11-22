@@ -26,10 +26,10 @@ internal type struct UnicodeProperties {
     /// braces (or the single letter of `\pL`).
     internal static table(body: Str) -> Result<&Slice<u32>, ErrorKind> {
         mut separator: i64 = -1;
-        for (mut i: i64 = 0; i < body.length(); i++) {
-            const byte: u8 = body.byte_at(i).unwrap();
+        for (mut index: i64 = 0; index < body.length(); index++) {
+            const byte: u8 = body.byte_at(index).unwrap();
             if (byte == 0x3D || byte == 0x3A) { // '=' or ':'
-                separator = i;
+                separator = index;
                 break;
             }
         }

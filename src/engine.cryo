@@ -139,30 +139,30 @@ internal type struct Engine {
     internal static expand(template: Str, haystack: u8*, slots: &Array<i64>, groups: &CaptureGroups, out: mut &Array<u8>) -> void {
         const text: u8* = template.as_pointer();
         const length: i64 = template.length();
-        mut i: i64 = 0;
-        while (i < length) {
-            const byte: u8 = text[i];
-            if (byte != 0x24 || i + 1 >= length) { // '$'
+        mut position: i64 = 0;
+        while (position < length) {
+            const byte: u8 = text[position];
+            if (byte != 0x24 || position + 1 >= length) { // '$'
                 out.push(byte);
-                i = i + 1;
+                position = position + 1;
                 continue;
             }
-            const next: u8 = text[i + 1];
+            const next: u8 = text[position + 1];
             if (next == 0x24) {
                 out.push(0x24);
-                i = i + 2;
+                position = position + 2;
                 continue;
             }
-            mut name_start: i64 = i + 1;
+            mut name_start: i64 = position + 1;
             mut name_end: i64 = name_start;
             mut resume: i64 = 0;
             if (next == 0x7B) { // '{'
-                name_start = i + 2;
+                name_start = position + 2;
                 name_end = name_start;
                 while (name_end < length && text[name_end] != 0x7D) { name_end = name_end + 1; }
                 if (name_end >= length || name_end == name_start) {
                     out.push(byte);
-                    i = i + 1;
+                    position = position + 1;
                     continue;
                 }
                 resume = name_end + 1;
@@ -178,7 +178,7 @@ internal type struct Engine {
                 }
                 if (name_end == name_start) {
                     out.push(byte);
-                    i = i + 1;
+                    position = position + 1;
                     continue;
                 }
                 resume = name_end;
@@ -189,12 +189,12 @@ internal type struct Engine {
                     const start: i64 = slots[index * 2];
                     const end: i64 = slots[index * 2 + 1];
                     if (start != NO_POSITION && end != NO_POSITION) {
-                        for (mut k: i64 = start; k < end; k++) { out.push(haystack[k]); }
+                        for (mut offset: i64 = start; offset < end; offset++) { out.push(haystack[offset]); }
                     }
                 }
                 Option::None => { }
             }
-            i = resume;
+            position = resume;
         }
     }
 
@@ -281,10 +281,10 @@ internal type struct Engine {
 
 implement trait Drop for struct Engine {
     drop(mut &this) -> void {
-        for (mut i: i64 = 0; i < 3; i++) {
-            if (this.pools[i] != null) {
-                delete this.pools[i];
-                this.pools[i] = null;
+        for (mut pool: i64 = 0; pool < 3; pool++) {
+            if (this.pools[pool] != null) {
+                delete this.pools[pool];
+                this.pools[pool] = null;
             }
         }
     }

@@ -57,8 +57,8 @@ internal type struct Utf8Sequence {
                 if (split) { continue; }
                 // Below the leading byte, every byte position must span its
                 // whole continuation range or vary only in the last position.
-                for (mut i: i64 = 1; i < 4; i++) {
-                    const mask: u32 = ((1 as u32) << (6 * i) as u32) - 1;
+                for (mut trailing: i64 = 1; trailing < 4; trailing++) {
+                    const mask: u32 = ((1 as u32) << (6 * trailing) as u32) - 1;
                     if ((range.start & ~mask) != (range.end & ~mask)) {
                         if ((range.start & mask) != 0) {
                             pending.push(ScalarRange { start: (range.start | mask) + 1, end: range.end });
@@ -79,13 +79,13 @@ internal type struct Utf8Sequence {
                 scratch.clear();
                 scratch.push_char(range.start as char);
                 const low_length: i64 = scratch.length();
-                for (mut i: i64 = 0; i < low_length; i++) {
-                    sequence.low[i] = scratch.as_bytes()[i];
+                for (mut byte_index: i64 = 0; byte_index < low_length; byte_index++) {
+                    sequence.low[byte_index] = scratch.as_bytes()[byte_index];
                 }
                 scratch.clear();
                 scratch.push_char(range.end as char);
-                for (mut i: i64 = 0; i < low_length; i++) {
-                    sequence.high[i] = scratch.as_bytes()[i];
+                for (mut byte_index: i64 = 0; byte_index < low_length; byte_index++) {
+                    sequence.high[byte_index] = scratch.as_bytes()[byte_index];
                 }
                 sequence.length = low_length;
                 out.push(sequence);

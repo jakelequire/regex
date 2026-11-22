@@ -115,7 +115,7 @@ internal type struct Cache {
     internal search(mut &this, automaton: &Automaton, prefilter: &Prefilter, input: &Input, slots: mut &Array<i64>) -> boolean {
         this.current.set.clear();
         this.next.set.clear();
-        for (mut i: i64 = 0; i < slots.length(); i++) { slots[i] = NO_POSITION; }
+        for (mut slot_index: i64 = 0; slot_index < slots.length(); slot_index++) { slots[slot_index] = NO_POSITION; }
         mut matched: boolean = false;
         mut at: i64 = input.start;
         loop {
@@ -130,7 +130,7 @@ internal type struct Cache {
             }
             // A new thread may start here, below every thread already running.
             if (!matched && (!input.anchored || at == input.start)) {
-                for (mut i: i64 = 0; i < this.slot_count; i++) { this.scratch[i] = NO_POSITION; }
+                for (mut slot_index: i64 = 0; slot_index < this.slot_count; slot_index++) { this.scratch[slot_index] = NO_POSITION; }
                 this.epsilon_closure(automaton, input, at, automaton.start, true);
             }
             if (this.step(automaton, input, at, slots)) {
@@ -166,8 +166,8 @@ internal type struct Cache {
                 }
                 State::Sparse(first, count) => {
                     if (has_byte) {
-                        for (mut i: u32 = 0; i < count; i++) {
-                            const transition: Transition = automaton.transition(first + i);
+                        for (mut offset: u32 = 0; offset < count; offset++) {
+                            const transition: Transition = automaton.transition(first + offset);
                             if (byte < transition.low) { break; }
                             if (byte <= transition.high) {
                                 next = transition.next;
@@ -183,8 +183,8 @@ internal type struct Cache {
                         continue;
                     }
                     const base: i64 = (id as i64) * per_state;
-                    for (mut i: i64 = 0; i < slots.length() && i < per_state; i++) {
-                        slots[i] = this.current.slots[base + i];
+                    for (mut slot_index: i64 = 0; slot_index < slots.length() && slot_index < per_state; slot_index++) {
+                        slots[slot_index] = this.current.slots[base + slot_index];
                     }
                     matched = true;
                     if (input.earliest) { return true; }
@@ -195,8 +195,8 @@ internal type struct Cache {
             }
             if (advances) {
                 const base: i64 = (id as i64) * per_state;
-                for (mut i: i64 = 0; i < per_state; i++) {
-                    this.scratch[i] = this.current.slots[base + i];
+                for (mut slot_index: i64 = 0; slot_index < per_state; slot_index++) {
+                    this.scratch[slot_index] = this.current.slots[base + slot_index];
                 }
                 this.epsilon_closure(automaton, input, at + 1, next, false);
             }
@@ -221,11 +221,11 @@ internal type struct Cache {
                         const inserted: boolean = if (into_current) { this.current.set.insert(id) } else { this.next.set.insert(id) };
                         if (!inserted) { break; }
                         const base: i64 = (id as i64) * per_state;
-                        for (mut i: i64 = 0; i < per_state; i++) {
+                        for (mut slot_index: i64 = 0; slot_index < per_state; slot_index++) {
                             if (into_current) {
-                                this.current.slots[base + i] = this.scratch[i];
+                                this.current.slots[base + slot_index] = this.scratch[slot_index];
                             } else {
-                                this.next.slots[base + i] = this.scratch[i];
+                                this.next.slots[base + slot_index] = this.scratch[slot_index];
                             }
                         }
                         mut proceed: boolean = false;
@@ -248,10 +248,10 @@ internal type struct Cache {
                             State::Union(alternates, count) => {
                                 // Later alternatives wait on the stack in reverse,
                                 // so they are explored in priority order.
-                                mut i: u32 = count;
-                                while (i > 1) {
-                                    i = i - 1;
-                                    this.stack.push(Frame::Explore(automaton.alternate(alternates + i)));
+                                mut alternate: u32 = count;
+                                while (alternate > 1) {
+                                    alternate = alternate - 1;
+                                    this.stack.push(Frame::Explore(automaton.alternate(alternates + alternate)));
                                 }
                                 id = automaton.alternate(alternates);
                                 proceed = true;

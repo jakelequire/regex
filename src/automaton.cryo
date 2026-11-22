@@ -98,14 +98,14 @@ internal type struct Automaton {
                 State::Capture(_, next)     => { stack.push(next); }
                 State::BinaryUnion(first, second) => { stack.push(first); stack.push(second); }
                 State::Union(first, count)  => {
-                    for (mut i: u32 = 0; i < count; i++) { stack.push(this.alternate(first + i)); }
+                    for (mut offset: u32 = 0; offset < count; offset++) { stack.push(this.alternate(first + offset)); }
                 }
                 State::ByteRange(low, high, _) => {
                     for (mut byte: u32 = low as u32; byte <= high as u32; byte++) { allowed[byte] = true; }
                 }
                 State::Sparse(first, count) => {
-                    for (mut i: u32 = 0; i < count; i++) {
-                        const transition: Transition = this.transition(first + i);
+                    for (mut offset: u32 = 0; offset < count; offset++) {
+                        const transition: Transition = this.transition(first + offset);
                         for (mut byte: u32 = transition.low as u32; byte <= transition.high as u32; byte++) { allowed[byte] = true; }
                     }
                 }
