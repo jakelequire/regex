@@ -144,8 +144,8 @@ private const CASES: [Case; 106] = [
 function every_case_matches_as_listed() -> Result<(), TestError> {
     mut failures: i64 = 0;
     mut report: String = String::new();
-    for (mut i: i64 = 0; i < 106; i++) {
-        const case: Case = CASES[i];
+    for (mut case_index: i64 = 0; case_index < 106; case_index++) {
+        const case: Case = CASES[case_index];
         const pattern: Str = Str::new(case.pattern);
         const haystack: Str = Str::new(case.haystack);
         match (Regex::new(pattern)) {

@@ -16,15 +16,15 @@ import RegexTests::DifferentialCases::{ CASES, CASE_COUNT, Case };
 function matches_reference_engine() -> Result<(), TestError> {
     mut failures: i64 = 0;
     mut report: String = String::new();
-    for (mut i: i64 = 0; i < CASE_COUNT; i++) {
-        const case: Case = CASES[i];
+    for (mut case_index: i64 = 0; case_index < CASE_COUNT; case_index++) {
+        const case: Case = CASES[case_index];
         const pattern: Str = Str::new(case.pattern);
         const haystack: Str = Str::new(case.haystack);
         match (Regex::new(pattern)) {
             Result::Err(error) => {
                 failures = failures + 1;
                 if (failures <= 20) {
-                    report.push(f"\n  #{i} {pattern:?}: refused: {error.describe()}");
+                    report.push(f"\n  #{case_index} {pattern:?}: refused: {error.describe()}");
                 }
             }
             Result::Ok(expression) => {
@@ -69,7 +69,7 @@ function matches_reference_engine() -> Result<(), TestError> {
                 if (!agrees) {
                     failures = failures + 1;
                     if (failures <= 20) {
-                        report.push(f"\n  #{i} {pattern:?} on {haystack:?}: expected {case.expected}, got {got.as_str()}");
+                        report.push(f"\n  #{case_index} {pattern:?} on {haystack:?}: expected {case.expected}, got {got.as_str()}");
                     }
                 }
             }

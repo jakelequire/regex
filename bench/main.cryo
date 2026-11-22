@@ -64,7 +64,7 @@ type struct Benchmark {
         for (mut round: i64 = 0; round < rounds; round++) {
             const start: Instant = Instant::now();
             mut count: i64 = 0;
-            for (mut i: i64 = 0; i < calls; i++) {
+            for (mut call: i64 = 0; call < calls; call++) {
                 if (expression.is_match(subject)) { count = count + 1; }
             }
             const nanoseconds: u64 = start.elapsed().as_nanoseconds();
