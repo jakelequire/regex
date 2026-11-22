@@ -46,10 +46,10 @@ internal type struct ClassRanges {
     /// is canonical already.
     internal static from_table(pairs: &Slice<u32>) -> ClassRanges {
         mut set: ClassRanges = ClassRanges { intervals: Array::with_capacity(pairs.length() / 2) };
-        mut i: i64 = 0;
-        while (i + 1 < pairs.length()) {
-            set.intervals.push(Interval { start: pairs[i], end: pairs[i + 1] });
-            i = i + 2;
+        mut pair: i64 = 0;
+        while (pair + 1 < pairs.length()) {
+            set.intervals.push(Interval { start: pairs[pair], end: pairs[pair + 1] });
+            pair = pair + 2;
         }
         return set;
     }
@@ -115,9 +115,9 @@ internal type struct ClassRanges {
     /// Sort the ranges and merge any that overlap or touch.
     internal canonicalize(mut &this) -> void {
         if (this.intervals.length() <= 1) { return; }
-        this.intervals.sort_by((a: &Interval, b: &Interval) -> Ordering {
-            if (a.start != b.start) { return a.start.compare(&b.start); }
-            return a.end.compare(&b.end);
+        this.intervals.sort_by((first: &Interval, second: &Interval) -> Ordering {
+            if (first.start != second.start) { return first.start.compare(&second.start); }
+            return first.end.compare(&second.end);
         });
         mut write: i64 = 0;
         mut read: i64 = 1;
@@ -148,17 +148,17 @@ internal type struct ClassRanges {
     /// Keep only the values also in `other`.
     internal intersect(mut &this, other: &ClassRanges) -> void {
         mut result: Array<Interval> = Array::new();
-        mut a: i64 = 0;
-        mut b: i64 = 0;
-        while (a < this.intervals.length() && b < other.intervals.length()) {
-            const left: Interval = this.intervals[a];
-            const right: Interval = other.intervals[b];
+        mut left_index: i64 = 0;
+        mut right_index: i64 = 0;
+        while (left_index < this.intervals.length() && right_index < other.intervals.length()) {
+            const left: Interval = this.intervals[left_index];
+            const right: Interval = other.intervals[right_index];
             const start: u32 = if (left.start > right.start) { left.start } else { right.start };
             const end: u32 = if (left.end < right.end) { left.end } else { right.end };
             if (start <= end) {
                 result.push(Interval { start: start, end: end });
             }
-            if (left.end < right.end) { a = a + 1; } else { b = b + 1; }
+            if (left.end < right.end) { left_index = left_index + 1; } else { right_index = right_index + 1; }
         }
         mem::swap(&this.intervals, &result);
     }
@@ -166,15 +166,15 @@ internal type struct ClassRanges {
     /// Remove every value that is in `other`.
     internal difference(mut &this, other: &ClassRanges) -> void {
         mut result: Array<Interval> = Array::new();
-        mut b: i64 = 0;
-        for (mut a: i64 = 0; a < this.intervals.length(); a++) {
-            mut start: u32 = this.intervals[a].start;
-            const end: u32 = this.intervals[a].end;
+        mut cut_index: i64 = 0;
+        for (mut index: i64 = 0; index < this.intervals.length(); index++) {
+            mut start: u32 = this.intervals[index].start;
+            const end: u32 = this.intervals[index].end;
             mut alive: boolean = true;
-            while (alive && b < other.intervals.length() && other.intervals[b].start <= end) {
-                const cut: Interval = other.intervals[b];
+            while (alive && cut_index < other.intervals.length() && other.intervals[cut_index].start <= end) {
+                const cut: Interval = other.intervals[cut_index];
                 if (cut.end < start) {
-                    b = b + 1;
+                    cut_index = cut_index + 1;
                     continue;
                 }
                 if (cut.start > start) {
@@ -184,7 +184,7 @@ internal type struct ClassRanges {
                     alive = false;
                 } else {
                     start = cut.end + 1;
-                    b = b + 1;
+                    cut_index = cut_index + 1;
                 }
             }
             if (alive) {
@@ -209,8 +209,8 @@ internal type struct ClassRanges {
         mut result: Array<Interval> = Array::new();
         mut next: u32 = 0;
         mut covered_to_end: boolean = false;
-        for (mut i: i64 = 0; i < this.intervals.length(); i++) {
-            const interval: Interval = this.intervals[i];
+        for (mut index: i64 = 0; index < this.intervals.length(); index++) {
+            const interval: Interval = this.intervals[index];
             if (interval.start > next) {
                 result.push(Interval { start: next, end: interval.start - 1 });
             }
@@ -235,8 +235,8 @@ internal type struct ClassRanges {
     internal fold_unicode(mut &this) -> void {
         const keys: &Slice<u32> = UnicodeTables::fold_keys();
         const original: i64 = this.intervals.length();
-        for (mut i: i64 = 0; i < original; i++) {
-            const interval: Interval = this.intervals[i];
+        for (mut index: i64 = 0; index < original; index++) {
+            const interval: Interval = this.intervals[index];
             mut position: i64 = ClassRanges::lower_bound(keys, interval.start);
             while (position < keys.length() && keys[position] <= interval.end) {
                 const equivalents: &Slice<u32> = UnicodeTables::fold_equivalents(position);
@@ -257,12 +257,12 @@ internal type struct ClassRanges {
         lowers.intersect(&lower);
         mut uppers: ClassRanges = this.copy();
         uppers.intersect(&upper);
-        for (mut i: i64 = 0; i < lowers.intervals.length(); i++) {
-            const interval: Interval = lowers.intervals[i];
+        for (mut index: i64 = 0; index < lowers.intervals.length(); index++) {
+            const interval: Interval = lowers.intervals[index];
             this.intervals.push(Interval { start: interval.start - 32, end: interval.end - 32 });
         }
-        for (mut i: i64 = 0; i < uppers.intervals.length(); i++) {
-            const interval: Interval = uppers.intervals[i];
+        for (mut index: i64 = 0; index < uppers.intervals.length(); index++) {
+            const interval: Interval = uppers.intervals[index];
             this.intervals.push(Interval { start: interval.start + 32, end: interval.end + 32 });
         }
         this.canonicalize();

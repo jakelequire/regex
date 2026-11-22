@@ -125,13 +125,13 @@ internal type struct SyntaxTree {
                 SyntaxNode::Repetition(min, _, _, sub) => { answer = min == 0 || matches_empty[sub]; }
                 SyntaxNode::Concatenation(first, length) => {
                     answer = true;
-                    for (mut i: u32 = 0; i < length; i++) {
-                        if (!matches_empty[this.child(first, i)]) { answer = false; }
+                    for (mut child_index: u32 = 0; child_index < length; child_index++) {
+                        if (!matches_empty[this.child(first, child_index)]) { answer = false; }
                     }
                 }
                 SyntaxNode::Alternation(first, length) => {
-                    for (mut i: u32 = 0; i < length; i++) {
-                        if (matches_empty[this.child(first, i)]) { answer = true; }
+                    for (mut child_index: u32 = 0; child_index < length; child_index++) {
+                        if (matches_empty[this.child(first, child_index)]) { answer = true; }
                     }
                 }
             }
@@ -221,8 +221,8 @@ internal type struct SyntaxTree {
                 }
                 SyntaxNode::Concatenation(first, count) => {
                     // A nested sequence is flattened into this one.
-                    for (mut i: u32 = 0; i < count; i++) {
-                        const inner: u32 = this.children[first + i];
+                    for (mut child_index: u32 = 0; child_index < count; child_index++) {
+                        const inner: u32 = this.children[first + child_index];
                         match (this.nodes[inner]) {
                             SyntaxNode::Literal(start, length) => { pending.append(this.literal(start, length)); }
                             _ => {
@@ -290,9 +290,9 @@ public type struct CaptureGroups {
 
     /// The index of the group called `name`.
     public index_of(&this, name: Str) -> Option<i64> {
-        for (mut i: i64 = 1; i < this.names.length(); i++) {
-            if (this.named[i] && this.names.get_reference(i).unwrap().as_str() == name) {
-                return Option::Some(i);
+        for (mut group: i64 = 1; group < this.names.length(); group++) {
+            if (this.named[group] && this.names.get_reference(group).unwrap().as_str() == name) {
+                return Option::Some(group);
             }
         }
         return Option::None;
