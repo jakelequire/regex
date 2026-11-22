@@ -1,1 +1,10 @@
+# Build output, and the namespace index a single-file `cryo check` keeps
 build/
+.bin/
+
+# The Unicode Character Database files fetch_ucd.py downloads
+ucd/
+
+# Bytecode the generator scripts leave behind
+__pycache__/
+*.pyc

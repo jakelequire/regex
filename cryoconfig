@@ -4,6 +4,9 @@ output_dir   = "build"
 # The demo program and tests/ import the library through its source root.
 source_paths = ["src"]
 
+# The library a dependent project compiles: src/lib.cryo declares the
+# namespace `regex`, and every file under src/ lies below it. Its version is
+# the repository's tag (v0.1.0, ...), not a key here.
 [lib]
 name       = "regex"
 source_dir = "src"
@@ -16,7 +19,5 @@ entry_point = "examples/demo.cryo"
 [[bin]]
 name        = "regex-bench"
 entry_point = "bench/main.cryo"
-
-[compiler]
 
 [dependencies]

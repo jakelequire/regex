@@ -1,34 +1,81 @@
 # regex
 
-Regular expressions for Cryo, with Perl-family syntax, full Unicode support,
-and a guarantee: **every search runs in time linear in the haystack**. A
-pattern from an untrusted source cannot make a search take exponential time,
-because the features that would need backtracking (backreferences,
-look-around, atomic groups) are refused with a clear error instead of being
-half-supported.
+Regular expressions for Cryo, with full Unicode support and a guarantee:
+**every search runs in time linear in the haystack**. A pattern from an
+untrusted source cannot make a search take exponential time, because the
+features that would need backtracking (backreferences, look-around, atomic
+groups) are refused with a clear error instead of being half-supported.
 
 ```cryo
 import regex::{ Regex };
 import std::collections::str::{ Str };
+import std::collections::string::{ String };
 
 const dates: Regex = Regex::new(Str::new("(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})")).unwrap();
-for (caps in dates.captures_iter(Str::new("2026-11-02 and 2026-12-15"))) {
-    // caps.name(Str::new("year")).unwrap().as_str() is "2026"
+for (captures in dates.captures_all(Str::new("2026-11-02 and 2026-12-15"))) {
+    // captures.name(Str::new("year")).unwrap().as_str() is "2026"
 }
-const swapped = dates.replace_all(Str::new("2026-11-02"), Str::new("${day}/${month}/${year}"));
+const swapped: String = dates.replace_all(Str::new("2026-11-02"), Str::new("${day}/${month}/${year}"));
+// swapped is "02/11/2026"
 ```
 
-## Using it
+## Installing
 
-Add a path (or git) dependency to your project's `cryoconfig`:
+regex is a Cryo library with no dependencies of its own. Add it to the
+`[dependencies]` of your project's `cryoconfig`, from git:
+
+```ini
+[dependencies]
+regex = { git = "https://github.com/jakelequire/regex.git", tag = "v0.1.0" }
+```
+
+and run `cryo fetch`, which resolves the tag and writes `cryoconfig.lock`.
+Versions are the repository's tags (`v0.1.0`, ...). To work against a local
+checkout instead, name its directory:
 
 ```ini
 [dependencies]
 regex = { path = "../regex" }
 ```
 
-then `import regex::{ Regex };`. Text haystacks are `Str`; for bytes that
-need not be UTF-8, use `regex::bytes::{ Regex }` with `Slice<u8>` haystacks.
+The library's namespace is `regex`: `import regex::{ Regex };` for text, and
+`import regex::bytes::{ Regex };` for haystacks of bytes that need not be
+UTF-8 (`&Slice<u8>`).
+
+## Using it
+
+A complete program that lists the words of a sentence, then rewrites it:
+
+```cryo
+namespace Example;
+
+import regex::{ Regex, RegexBuilder };
+import std::collections::str::{ Str };
+import std::collections::string::{ String };
+import std::fmt;
+
+function main() -> i32 {
+    const text: Str = Str::new("The quick brown fox");
+
+    // Every match, left to right.
+    const words: Regex = Regex::new(Str::new("\\w+")).unwrap();
+    for (word in words.find_all(text)) {
+        fmt::println(f"{word.start()}..{word.end()}: {word}");
+    }
+
+    // Options a pattern could also set inline, here `(?i)`.
+    const fox: Regex = RegexBuilder::new(Str::new("FOX")).case_insensitive(true).build().unwrap();
+    const replaced: String = fox.replace_all(text, Str::new("dog"));
+    fmt::println(f"{replaced}");
+
+    // A pattern that cannot be compiled says why, and where.
+    match (Regex::new(Str::new("a{3,2}"))) {
+        Result::Ok(_) => { }
+        Result::Err(error) => { fmt::println(f"{error}"); }
+    }
+    return 0;
+}
+```
 
 ### API at a glance
 
@@ -36,14 +83,14 @@ need not be UTF-8, use `regex::bytes::{ Regex }` with `Slice<u8>` haystacks.
 |---|---|
 | `Regex::new(pattern)` | compile with default options; `Result<Regex, Error>` |
 | `RegexBuilder::new(pattern).case_insensitive(true).build()` | compile with options: `case_insensitive`, `multi_line`, `dot_matches_new_line`, `swap_greed`, `ignore_whitespace`, `unicode`, `size_limit`, `nest_limit` |
-| `re.is_match(h)` / `re.is_match_at(h, i)` | does it match anywhere? (stops at the first match) |
-| `re.find(h)` / `re.find_at(h, i)` | the leftmost match, a `Match` with `start()`, `end()`, `as_str()` |
-| `re.find_iter(h)` | every non-overlapping match |
-| `re.captures(h)` / `re.captures_iter(h)` | groups by number (`get(i)`) or name (`name(n)`) |
-| `re.replace(h, r)` / `replace_all` / `replacen` | substitution with `$1`, `${1}`, `$name`, `${name}`, `$$` |
-| `re.split(h)` / `re.splitn(h, n)` | the text between matches |
-| `escape(text)` | a pattern matching `text` literally |
-| `re.captures_length()`, `capture_name(i)`, `capture_index(name)` | group metadata |
+| `expression.is_match(h)` / `is_match_at(h, i)` | does it match anywhere? (stops at the first match) |
+| `expression.find(h)` / `find_at(h, i)` | the leftmost match, a `Match` with `start()`, `end()`, `as_str()` |
+| `expression.find_all(h)` | every non-overlapping match |
+| `expression.captures(h)` / `captures_at(h, i)` / `captures_all(h)` | groups by number (`get(i)`) or name (`name(n)`) |
+| `expression.replace(h, r)` / `replace_all` / `replace_at_most(h, n, r)` | substitution with `$1`, `${1}`, `$name`, `${name}`, `$$` |
+| `expression.split(h)` / `split_at_most(h, n)` | the text between matches |
+| `Regex::escape(text)` | a pattern matching `text` literally |
+| `captures_length()`, `capture_name(i)`, `capture_index(name)` | group metadata |
 
 `Error` reports a kind (`error.kind()`, an `ErrorKind`) and the span of the
 pattern at fault; printing it underlines the span:
@@ -122,12 +169,12 @@ match can start with. On a 2 MiB English haystack (`build/regex-bench`):
 
 | pattern | throughput |
 |---|---|
-| `Moriarty` (absent literal) | ~35 GiB/s |
+| `Moriarty` (absent literal) | ~25-35 GiB/s |
 | `\p{Greek}+` | ~1 GiB/s |
-| `\d{4}-\d{2}-\d{2}` | ~200 MiB/s |
+| `\d{4}-\d{2}-\d{2}` | ~190 MiB/s |
 | `Sherlock` | ~150 MiB/s |
-| `Sherlock\|Holmes` | ~60 MiB/s |
-| `\w+@\w+\.com`, `[a-z]+ing`, `\b\w+\b` | ~7-10 MiB/s |
+| `Sherlock\|Holmes` | ~50 MiB/s |
+| `\w+@\w+\.com`, `[a-z]+ing`, `\b\w+\b` | ~5-9 MiB/s |
 
 The last row is the Pike VM's own speed, where most positions can start a
 match. A lazy DFA, which answers most searches without simulating threads,
@@ -137,11 +184,11 @@ is the next piece of work and is what will lift that row.
 
 | | |
 |---|---|
-| `src/lib.cryo` | the facade: `regex::{ Regex, RegexBuilder, Match, Captures, Error, ErrorKind, escape, ... }` |
+| `src/lib.cryo` | the facade: `regex::{ Regex, RegexBuilder, Match, Captures, Error, ErrorKind, ... }` |
 | `src/text.cryo`, `src/bytes.cryo` | the two front ends; `bytes` holds the implementation, `text` presents it over `Str` |
-| `src/syntax/` | parser (pattern to a normalized tree, flags applied), class sets |
-| `src/compiler.cryo`, `src/nfa.cryo` | Thompson construction to a byte automaton; Unicode classes become minimal UTF-8 automata |
-| `src/pikevm.cryo`, `src/prefilter.cryo`, `src/engine.cryo` | matching, candidate skipping, and the shared search driver |
+| `src/syntax/` | the parser (pattern to a normalized syntax tree, flags applied) and class sets |
+| `src/compiler.cryo`, `src/automaton.cryo` | Thompson construction to a byte automaton; Unicode classes become minimal UTF-8 automata |
+| `src/search.cryo`, `src/prefilter.cryo`, `src/engine.cryo` | the Pike VM, candidate skipping, and the shared search driver |
 | `src/unicode/` | property lookup; `tables.cryo` is generated |
 | `scripts/unicode/` | `fetch_ucd.py` and `generate_tables.py`, which write `src/unicode/tables.cryo` |
 | `scripts/testgen/` | `generate_differential.py`, which writes `tests/differential_cases.cryo` |
@@ -154,9 +201,15 @@ bounds memory, not safety.
 
 ```sh
 cryo test                 # every test
-cryo build                # library, demo and benchmark
+cryo build                # the demo and the benchmark
+./build/regex-demo        # a tour of the library
 ./build/regex-bench       # throughput
-python scripts/unicode/fetch_ucd.py <dir> && python scripts/unicode/generate_tables.py <dir> src/unicode/tables.cryo
+```
+
+The generated files are rewritten by the scripts beside them:
+
+```sh
+python scripts/unicode/fetch_ucd.py ucd && python scripts/unicode/generate_tables.py ucd src/unicode/tables.cryo
 python scripts/testgen/generate_differential.py 3000
 ```
 
@@ -164,3 +217,7 @@ The differential cases are 3,000 random patterns whose first match and group
 spans were recorded from Python's `re`, a backtracking engine with the same
 leftmost-first semantics; the generator documents the few constructs on
 which the two engines legitimately differ and stays clear of them.
+
+## License
+
+Apache License 2.0; see [LICENSE](LICENSE).
