@@ -1,4 +1,4 @@
-///! Nfa: a compiled pattern as a byte-level Thompson automaton.
+///! Automaton: a compiled pattern as a byte-level Thompson automaton.
 ///!
 ///! Every transition reads one byte; Unicode classes have already been
 ///! turned into UTF-8 byte sequences by the compiler. States are small
@@ -9,14 +9,10 @@
 ///! Capture slots: group `g` records its start in slot `2g` and its end in
 ///! slot `2g + 1`. Group 0 is the whole match.
 
-namespace regex::nfa;
+namespace regex::automaton;
 
-import std::core::slice::{ Slice };
 import std::collections::array::{ Array };
-import regex::syntax::hir::{ Look, GroupInfo };
-
-/// A state identifier: an index into `Nfa::states`.
-internal type StateId = u32;
+import regex::syntax::tree::{ Assertion };
 
 /// A successor not yet known while the automaton is being built.
 internal const HOLE: u32 = 0xFFFFFFFF;
@@ -43,14 +39,14 @@ internal type enum State {
     /// Record the position in slot `slot`, then go to the successor.
     Capture(u32, u32);
     /// Go to the successor only where the assertion holds.
-    Look(Look, u32);
+    Assertion(Assertion, u32);
     /// A dead end.
     Fail;
     /// The pattern has matched.
     Match;
 }
 
-internal type struct Nfa {
+internal type struct Automaton {
     states: Array<State>;
     transitions: Array<Transition>;
     alternates: Array<u32>;
@@ -59,9 +55,7 @@ internal type struct Nfa {
     /// Two slots per capture group.
     slot_count: u32;
     /// Matches must start and end on UTF-8 boundaries (a text regex).
-    utf8: boolean;
-    /// Some state is a `Look`; searches must evaluate assertions.
-    has_look: boolean;
+    utf8_only: boolean;
 
     internal state(&this, id: u32) -> State {
         return this.states[id];
@@ -84,5 +78,41 @@ internal type struct Nfa {
         return this.states.length() * (sizeof(State) as i64)
             + this.transitions.length() * (sizeof(Transition) as i64)
             + this.alternates.length() * 4;
+    }
+
+    /// Mark in `allowed` every byte a match can begin with. Answers false
+    /// when a match can be empty, so that no byte is required. Assertions on
+    /// the way are taken to hold, which only makes the set larger.
+    internal first_bytes(&this, allowed: mut &[boolean; 256]) -> boolean {
+        mut seen: Array<boolean> = Array::new();
+        seen.resize(this.state_count(), false);
+        mut stack: Array<u32> = Array::new();
+        stack.push(this.start);
+        while (stack.length() > 0) {
+            const id: u32 = stack.pop().unwrap();
+            if (seen[id]) { continue; }
+            seen[id] = true;
+            match (this.state(id)) {
+                State::Empty(next)          => { stack.push(next); }
+                State::Assertion(_, next)   => { stack.push(next); }
+                State::Capture(_, next)     => { stack.push(next); }
+                State::BinaryUnion(first, second) => { stack.push(first); stack.push(second); }
+                State::Union(first, count)  => {
+                    for (mut i: u32 = 0; i < count; i++) { stack.push(this.alternate(first + i)); }
+                }
+                State::ByteRange(low, high, _) => {
+                    for (mut byte: u32 = low as u32; byte <= high as u32; byte++) { allowed[byte] = true; }
+                }
+                State::Sparse(first, count) => {
+                    for (mut i: u32 = 0; i < count; i++) {
+                        const transition: Transition = this.transition(first + i);
+                        for (mut byte: u32 = transition.low as u32; byte <= transition.high as u32; byte++) { allowed[byte] = true; }
+                    }
+                }
+                State::Match => { return false; }
+                State::Fail => { }
+            }
+        }
+        return true;
     }
 }

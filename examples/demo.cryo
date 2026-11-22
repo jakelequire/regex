@@ -11,8 +11,8 @@ function main() -> i32 {
     // Find every date, and reach its parts by name.
     const dates: Regex = Regex::new(Str::new("(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})")).unwrap();
     const text: Str = Str::new("Released 2026-11-02, patched 2026-12-15.");
-    for (caps in dates.captures_iter(text)) {
-        fmt::println(f"year {caps.name(Str::new("year")).unwrap()}, month {caps.name(Str::new("month")).unwrap()}");
+    for (captures in dates.captures_all(text)) {
+        fmt::println(f"year {captures.name(Str::new("year")).unwrap()}, month {captures.name(Str::new("month")).unwrap()}");
     }
 
     // Rewrite them, referring to the groups by name.
@@ -21,7 +21,7 @@ function main() -> i32 {
 
     // Unicode classes and case-insensitive matching.
     const greek: Regex = RegexBuilder::new(Str::new("\\p{Greek}+")).case_insensitive(true).build().unwrap();
-    for (word in greek.find_iter(Str::new("alpha \u{3b1}\u{3bb}\u{3c6}\u{3b1}, omega \u{3a9}"))) {
+    for (word in greek.find_all(Str::new("alpha \u{3b1}\u{3bb}\u{3c6}\u{3b1}, omega \u{3a9}"))) {
         fmt::println(f"greek: {word}");
     }
 

@@ -27,11 +27,11 @@ public type enum ErrorKind {
     /// A POSIX class name that does not exist (`[[:alfa:]]`).
     ClassPosixUnrecognized;
     /// A numeric escape with no digits (`\x{}`).
-    EscapeHexEmpty;
+    EscapeNumericEmpty;
     /// A numeric escape naming no Unicode scalar value (`\x{D800}`, `\x{110000}`).
-    EscapeHexInvalid;
+    EscapeNumericInvalid;
     /// A non-digit inside a numeric escape (`\x{12g}`).
-    EscapeHexInvalidDigit;
+    EscapeNumericInvalidDigit;
     /// A pattern ending in a lone backslash.
     EscapeUnexpectedEnd;
     /// An escape the syntax does not define (`\y`).
@@ -105,9 +105,9 @@ implement enum ErrorKind {
             ErrorKind::ClassRangeLiteral            => { "a character class range endpoint must be a single character" }
             ErrorKind::ClassUnclosed                => { "unclosed character class" }
             ErrorKind::ClassPosixUnrecognized       => { "unrecognized POSIX character class" }
-            ErrorKind::EscapeHexEmpty               => { "numeric escape has no digits" }
-            ErrorKind::EscapeHexInvalid             => { "numeric escape is not a Unicode scalar value" }
-            ErrorKind::EscapeHexInvalidDigit        => { "invalid digit in numeric escape" }
+            ErrorKind::EscapeNumericEmpty           => { "numeric escape has no digits" }
+            ErrorKind::EscapeNumericInvalid         => { "numeric escape is not a Unicode scalar value" }
+            ErrorKind::EscapeNumericInvalidDigit    => { "invalid digit in numeric escape" }
             ErrorKind::EscapeUnexpectedEnd          => { "pattern ends with an incomplete escape" }
             ErrorKind::EscapeUnrecognized           => { "unrecognized escape sequence" }
             ErrorKind::FlagDanglingNegation         => { "flag negation '-' is not followed by a flag" }

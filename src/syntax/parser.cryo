@@ -1,10 +1,10 @@
-///! Parser: pattern text to `Hir`, in one pass.
+///! Parser: pattern text to `SyntaxTree`, in one pass.
 ///!
-///! The syntax is the Perl family's, restricted to what can be matched in
-///! time linear in the haystack: no backreferences, look-around, atomic
-///! groups or possessive repetitions, each refused with its own error.
-///! Flags are applied as the parser reads, so the tree it builds is
-///! already normalized (see `hir`).
+///! The syntax is the common one of regular expressions, restricted to what
+///! can be matched in time linear in the haystack: no backreferences,
+///! look-around, atomic groups or possessive repetitions, each refused with
+///! its own error. Flags are applied as the parser reads, so the tree it
+///! builds is already normalized (see `tree`).
 ///!
 ///! Bracketed classes may nest and combine with `&&` (intersection), `--`
 ///! (difference) and `~~` (symmetric difference); POSIX classes
@@ -20,9 +20,10 @@ import std::collections::str::{ Str };
 import std::collections::string::{ String };
 import std::core::mem;
 import regex::error::{ Error, ErrorKind };
-import regex::syntax::hir::{ Hir, Look, GroupInfo, UNBOUNDED };
+import regex::syntax::tree::{ SyntaxTree, Assertion, CaptureGroups, UNBOUNDED };
 import regex::syntax::intervals::{ ClassRanges, MAX_SCALAR, MAX_BYTE };
-import regex::unicode;
+import regex::unicode::{ UnicodeProperties };
+import regex::unicode::tables::{ UnicodeTables };
 
 /// The most capture groups a pattern may have.
 internal const MAX_CAPTURE_GROUPS: i64 = 65535;
@@ -51,26 +52,13 @@ internal type struct ParseOptions {
     /// Groups and classes nested deeper than this are refused.
     nest_limit: u32;
     /// The pattern may only match valid UTF-8 (a text regex).
-    utf8: boolean;
+    utf8_only: boolean;
 }
 
 /// What a successful parse produces.
 internal type struct Parsed {
-    hir: Hir;
-    groups: GroupInfo;
-}
-
-internal function parse(pattern: Str, options: ParseOptions) -> Result<Parsed, Error> {
-    mut parser: Parser = Parser::new(pattern, options);
-    match (parser.check_pattern_text()) {
-        Option::Some(error) => { return Result::Err(error); }
-        Option::None => { }
-    }
-    // Group 0 wraps the whole pattern.
-    const body: u32 = parser.parse_pattern()?;
-    const root: u32 = parser.hir.add_capture(0, body);
-    parser.hir.set_root(root);
-    return Result::Ok(parser.finish());
+    tree: SyntaxTree;
+    groups: CaptureGroups;
 }
 
 /// One scalar of the pattern and the byte offset it starts at.
@@ -88,7 +76,7 @@ private type enum Escape {
     Byte(u8);
     /// A class; `true` when its ranges are bytes.
     Class(boolean);
-    Look(Look);
+    Assertion(Assertion);
     /// `\Q`: the text up to `\E` is literal.
     QuoteStart;
     /// `\E` with no `\Q` open: means nothing.
@@ -116,16 +104,16 @@ private type struct Sequence {
     }
 
     /// Close the alternative under way at a `|`.
-    end_branch(mut &this, hir: mut &Hir) -> void {
-        this.branches.push(hir.add_concat(this.items.as_slice()));
+    end_branch(mut &this, tree: mut &SyntaxTree) -> void {
+        this.branches.push(tree.add_concatenation(this.items.as_slice()));
         this.items.clear();
         this.repeatable = false;
     }
 
     /// The node for everything read: the alternation of the alternatives.
-    finish(mut &this, hir: mut &Hir) -> u32 {
-        this.end_branch(hir);
-        return hir.add_alternation(this.branches.as_slice());
+    finish(mut &this, tree: mut &SyntaxTree) -> u32 {
+        this.end_branch(tree);
+        return tree.add_alternation(this.branches.as_slice());
     }
 }
 
@@ -181,17 +169,30 @@ private type struct OpenClass {
     }
 }
 
-private type struct Parser {
-    pattern: Str;
-    chars: Array<PatternChar>;
-    position: i64;
-    flags: Flags;
-    options: ParseOptions;
-    depth: u32;
-    hir: Hir;
-    groups: GroupInfo;
+internal type struct Parser {
+    private pattern: Str;
+    private chars: Array<PatternChar>;
+    private position: i64;
+    private flags: Flags;
+    private options: ParseOptions;
+    private depth: u32;
+    private tree: SyntaxTree;
+    private groups: CaptureGroups;
 
-    static new(pattern: Str, options: ParseOptions) -> Parser {
+    internal static parse(pattern: Str, options: ParseOptions) -> Result<Parsed, Error> {
+        mut parser: Parser = Parser::new(pattern, options);
+        match (parser.check_pattern_text()) {
+            Option::Some(error) => { return Result::Err(error); }
+            Option::None => { }
+        }
+        // Group 0 wraps the whole pattern.
+        const body: u32 = parser.parse_pattern()?;
+        const root: u32 = parser.tree.add_capture(0, body);
+        parser.tree.set_root(root);
+        return Result::Ok(parser.finish());
+    }
+
+    private static new(pattern: Str, options: ParseOptions) -> Parser {
         mut chars: Array<PatternChar> = Array::with_capacity(pattern.length());
         for (index in pattern.char_indices()) {
             chars.push(PatternChar { offset: index.first, scalar: index.second });
@@ -203,68 +204,110 @@ private type struct Parser {
             flags: options.flags,
             options: options,
             depth: 0,
-            hir: Hir::new(),
-            groups: GroupInfo::new(),
+            tree: SyntaxTree::new(),
+            groups: CaptureGroups::new(),
         };
     }
 
-    finish(mut this) -> Parsed {
-        const { pattern, chars, position, flags, options, depth, hir, groups }: Parser = this;
-        return Parsed { hir: hir, groups: groups };
+    /// The ASCII class a POSIX name denotes, into `set`; false for an
+    /// unknown name.
+    private static posix_class(name: Str, set: mut &ClassRanges) -> boolean {
+        if (name == Str::new("alnum"))  { set.push(0x30, 0x39); set.push(0x41, 0x5A); set.push(0x61, 0x7A); }
+        else if (name == Str::new("alpha"))  { set.push(0x41, 0x5A); set.push(0x61, 0x7A); }
+        else if (name == Str::new("ascii"))  { set.push(0x00, 0x7F); }
+        else if (name == Str::new("blank"))  { set.push(0x09, 0x09); set.push(0x20, 0x20); }
+        else if (name == Str::new("cntrl"))  { set.push(0x00, 0x1F); set.push(0x7F, 0x7F); }
+        else if (name == Str::new("digit"))  { set.push(0x30, 0x39); }
+        else if (name == Str::new("graph"))  { set.push(0x21, 0x7E); }
+        else if (name == Str::new("lower"))  { set.push(0x61, 0x7A); }
+        else if (name == Str::new("print"))  { set.push(0x20, 0x7E); }
+        else if (name == Str::new("punct"))  { set.push(0x21, 0x2F); set.push(0x3A, 0x40); set.push(0x5B, 0x60); set.push(0x7B, 0x7E); }
+        else if (name == Str::new("space"))  { set.push(0x09, 0x0D); set.push(0x20, 0x20); }
+        else if (name == Str::new("upper"))  { set.push(0x41, 0x5A); }
+        else if (name == Str::new("word"))   { set.push(0x30, 0x39); set.push(0x41, 0x5A); set.push(0x5F, 0x5F); set.push(0x61, 0x7A); }
+        else if (name == Str::new("xdigit")) { set.push(0x30, 0x39); set.push(0x41, 0x46); set.push(0x61, 0x66); }
+        else { return false; }
+        set.canonicalize();
+        return true;
+    }
+
+    /// A `(?` followed by `c` (and `next`) that opens a recursion,
+    /// subroutine call, conditional or branch reset group.
+    private static is_unsupported_group_start(c: u32, next: Option<u32>) -> boolean {
+        if (c == 0x7C || c == 0x28 || c == 0x52 || c == 0x26) { return true; } // | ( R &
+        if ((c as char).is_digit()) { return true; }
+        if (c == 0x2B || c == 0x2D) {                                         // (?+1) (?-1)
+            return match (next) {
+                Option::Some(following) => { (following as char).is_digit() }
+                Option::None => { false }
+            };
+        }
+        return false;
+    }
+
+    /// Whitespace verbose mode ignores: the Pattern_White_Space property.
+    private static is_pattern_whitespace(c: u32) -> boolean {
+        return (c >= 0x09 && c <= 0x0D) || c == 0x20 || c == 0x85
+            || c == 0x200E || c == 0x200F || c == 0x2028 || c == 0x2029;
+    }
+
+    private finish(mut this) -> Parsed {
+        const { pattern, chars, position, flags, options, depth, tree, groups }: Parser = this;
+        return Parsed { tree: tree, groups: groups };
     }
 
     // ------------------------------------------------------------------
     // Cursor
 
-    at_end(&this) -> boolean {
+    private at_end(&this) -> boolean {
         return this.position >= this.chars.length();
     }
 
-    current(&this) -> u32 {
+    private current(&this) -> u32 {
         return this.chars[this.position].scalar;
     }
 
     /// The scalar `ahead` places after the current one.
-    peek(&this, ahead: i64) -> Option<u32> {
+    private peek(&this, ahead: i64) -> Option<u32> {
         const at: i64 = this.position + ahead;
         if (at >= this.chars.length()) { return Option::None; }
         return Option::Some(this.chars[at].scalar);
     }
 
-    is(&this, scalar: u32) -> boolean {
+    private is(&this, scalar: u32) -> boolean {
         return !this.at_end() && this.current() == scalar;
     }
 
-    is_ahead(&this, ahead: i64, scalar: u32) -> boolean {
+    private is_ahead(&this, ahead: i64, scalar: u32) -> boolean {
         return match (this.peek(ahead)) {
             Option::Some(found) => { found == scalar }
             Option::None => { false }
         };
     }
 
-    bump(mut &this) -> void {
+    private bump(mut &this) -> void {
         this.position = this.position + 1;
     }
 
     /// Byte offset of the scalar at char index `index`; the pattern's
     /// length past the last one.
-    offset(&this, index: i64) -> i64 {
+    private offset(&this, index: i64) -> i64 {
         if (index >= this.chars.length()) { return this.pattern.length(); }
         return this.chars[index].offset;
     }
 
-    error_span(&this, kind: ErrorKind, start: i64, end: i64) -> Error {
+    private error_span(&this, kind: ErrorKind, start: i64, end: i64) -> Error {
         return Error::new(kind, this.pattern, this.offset(start), this.offset(end));
     }
 
     /// An error about the current scalar (or the end of the pattern).
-    error_here(&this, kind: ErrorKind) -> Error {
+    private error_here(&this, kind: ErrorKind) -> Error {
         return this.error_span(kind, this.position, this.position + 1);
     }
 
     /// The pattern must be well-formed UTF-8: a malformed byte would be
     /// read as U+FFFD and silently match something else.
-    check_pattern_text(&this) -> Option<Error> {
+    private check_pattern_text(&this) -> Option<Error> {
         const bytes: &Slice<u8> = this.pattern.as_bytes();
         for (mut i: i64 = 0; i < this.chars.length(); i++) {
             const c: PatternChar = this.chars[i];
@@ -279,11 +322,11 @@ private type struct Parser {
     }
 
     /// In verbose mode, step over whitespace and `#` comments.
-    skip_trivia(mut &this) -> void {
+    private skip_trivia(mut &this) -> void {
         if (!this.flags.ignore_whitespace) { return; }
         while (!this.at_end()) {
             const c: u32 = this.current();
-            if (is_pattern_whitespace(c)) {
+            if (Parser::is_pattern_whitespace(c)) {
                 this.bump();
             } else if (c == 0x23) { // '#'
                 while (!this.at_end() && this.current() != 0x0A) { this.bump(); }
@@ -299,7 +342,7 @@ private type struct Parser {
     /// The whole pattern. Groups are opened and closed on an explicit
     /// stack rather than by recursion, so no pattern can exhaust the call
     /// stack however deeply it nests; the nest limit bounds this stack.
-    parse_pattern(mut &this) -> Result<u32, Error> {
+    private parse_pattern(mut &this) -> Result<u32, Error> {
         mut open: Array<OpenGroup> = Array::new();
         mut sequence: Sequence = Sequence::new();
         loop {
@@ -308,7 +351,7 @@ private type struct Parser {
             const c: u32 = this.current();
             if (c == 0x7C) { // '|'
                 this.bump();
-                sequence.end_branch(&this.hir);
+                sequence.end_branch(&this.tree);
                 continue;
             }
             if (c == 0x29) { // ')'
@@ -316,11 +359,11 @@ private type struct Parser {
                     return Result::Err(this.error_here(ErrorKind::GroupUnopened));
                 }
                 this.bump();
-                const body: u32 = sequence.finish(&this.hir);
+                const body: u32 = sequence.finish(&this.tree);
                 mut group: OpenGroup = open.pop().unwrap();
                 this.flags = group.saved;
                 this.depth = this.depth - 1;
-                const node: u32 = if (group.capturing) { this.hir.add_capture(group.index, body) } else { body };
+                const node: u32 = if (group.capturing) { this.tree.add_capture(group.index, body) } else { body };
                 mem::swap(&sequence, &group.enclosing);
                 sequence.push(node);
                 continue;
@@ -343,12 +386,12 @@ private type struct Parser {
             const innermost: i64 = open.last().unwrap().start;
             return Result::Err(this.error_span(ErrorKind::GroupUnclosed, innermost, innermost + 1));
         }
-        return Result::Ok(sequence.finish(&this.hir));
+        return Result::Ok(sequence.finish(&this.tree));
     }
 
     /// One item of a sequence at the current scalar, `c`: an atom, or a
     /// repetition operator applied to the sequence's last atom.
-    parse_item(mut &this, sequence: mut &Sequence) -> Result<(), Error> {
+    private parse_item(mut &this, sequence: mut &Sequence) -> Result<(), Error> {
         const c: u32 = this.current();
         const start: i64 = this.position;
         if (c == 0x2A || c == 0x2B || c == 0x3F) { // '*', '+', '?'
@@ -391,15 +434,15 @@ private type struct Parser {
         }
         if (c == 0x5E) { // '^'
             this.bump();
-            const look: Look = if (this.flags.multi_line) { Look::StartLine } else { Look::Start };
-            sequence.items.push(this.hir.add_look(look));
+            const assertion: Assertion = if (this.flags.multi_line) { Assertion::StartLine } else { Assertion::Start };
+            sequence.items.push(this.tree.add_assertion(assertion));
             sequence.repeatable = true;
             return Result::Ok(());
         }
         if (c == 0x24) { // '$'
             this.bump();
-            const look: Look = if (this.flags.multi_line) { Look::EndLine } else { Look::End };
-            sequence.items.push(this.hir.add_look(look));
+            const assertion: Assertion = if (this.flags.multi_line) { Assertion::EndLine } else { Assertion::End };
+            sequence.items.push(this.tree.add_assertion(assertion));
             sequence.repeatable = true;
             return Result::Ok(());
         }
@@ -409,7 +452,7 @@ private type struct Parser {
                 Escape::Scalar(scalar) => { sequence.items.push(this.scalar_literal(scalar)); }
                 Escape::Byte(byte)     => { sequence.items.push(this.byte_literal(start, byte)?); }
                 Escape::Class(bytes)   => { sequence.items.push(this.class_node(start, set, bytes)?); }
-                Escape::Look(look)     => { sequence.items.push(this.hir.add_look(look)); }
+                Escape::Assertion(assertion) => { sequence.items.push(this.tree.add_assertion(assertion)); }
                 Escape::QuoteStart     => {
                     this.parse_quoted(&sequence.items);
                     // A repetition after `\Q..\E` repeats its last scalar.
@@ -431,7 +474,7 @@ private type struct Parser {
 
     /// The repetition of `sub` from `min` to `max`, reading the `?` (lazy)
     /// or `+` (possessive, refused) that may follow the operator.
-    finish_repetition(mut &this, start: i64, min: u32, max: u32, sub: u32) -> Result<u32, Error> {
+    private finish_repetition(mut &this, start: i64, min: u32, max: u32, sub: u32) -> Result<u32, Error> {
         mut lazy: boolean = false;
         if (this.is(0x3F)) { // '?'
             this.bump();
@@ -440,19 +483,21 @@ private type struct Parser {
             return Result::Err(this.error_span(ErrorKind::UnsupportedAtomic, start, this.position + 1));
         }
         const greedy: boolean = lazy == this.flags.swap_greed;
-        return Result::Ok(this.hir.add_repetition(min, max, greedy, sub));
+        return Result::Ok(this.tree.add_repetition(min, max, greedy, sub));
     }
 
     /// At a `{`: the count it opens, or `None` when the text is not a
     /// well-formed count (`{`, `{a}`, `{}`), in which case nothing is
-    /// consumed and the brace is a literal, as in the Perl family.
-    try_counted_repetition(mut &this) -> Result<Option<Count>, Error> {
+    /// consumed and the brace is a literal.
+    private try_counted_repetition(mut &this) -> Result<Option<Count>, Error> {
         const start: i64 = this.position;
         mut at: i64 = start + 1;
         mut min_digits: i64 = 0;
         mut min: u64 = 0;
-        while (at < this.chars.length() && is_decimal(this.chars[at].scalar)) {
-            min = saturating_decimal(min, this.chars[at].scalar);
+        // A count past the limit saturates rather than wrapping, so it is
+        // refused below whatever its length.
+        while (at < this.chars.length() && (this.chars[at].scalar as char).is_digit()) {
+            min = min.saturating_multiply(10).saturating_add((this.chars[at].scalar - 0x30) as u64);
             min_digits = min_digits + 1;
             at = at + 1;
         }
@@ -462,8 +507,8 @@ private type struct Parser {
         if (at < this.chars.length() && this.chars[at].scalar == 0x2C) { // ','
             has_comma = true;
             at = at + 1;
-            while (at < this.chars.length() && is_decimal(this.chars[at].scalar)) {
-                max = saturating_decimal(max, this.chars[at].scalar);
+            while (at < this.chars.length() && (this.chars[at].scalar as char).is_digit()) {
+                max = max.saturating_multiply(10).saturating_add((this.chars[at].scalar - 0x30) as u64);
                 max_digits = max_digits + 1;
                 at = at + 1;
             }
@@ -496,7 +541,7 @@ private type struct Parser {
     /// At a `(`: read the group's opening - its kind, name or flags - and
     /// answer the group it opens, or `Nothing` for a group that only sets
     /// flags (`(?i)`) or is a comment (`(?#...)`).
-    parse_group_open(mut &this) -> Result<GroupOpen, Error> {
+    private parse_group_open(mut &this) -> Result<GroupOpen, Error> {
         const start: i64 = this.position;
         this.bump();
         mut name: Option<Str> = Option::None;
@@ -543,7 +588,7 @@ private type struct Parser {
                 } else {
                     return Result::Err(this.error_here(ErrorKind::FlagUnrecognized));
                 }
-            } else if (is_unsupported_group_start(c, this.peek(1))) {
+            } else if (Parser::is_unsupported_group_start(c, this.peek(1))) {
                 return Result::Err(this.error_span(ErrorKind::UnsupportedGroup, start, this.position + 1));
             } else {
                 // Flags, then `:` for a group or `)` for the rest of this one.
@@ -560,7 +605,7 @@ private type struct Parser {
                 Option::Some(text) => {
                     if (this.groups.index_of(text).is_some()) {
                         const name_end: i64 = this.position - 1;
-                        const name_start: i64 = name_end - char_count(text);
+                        const name_start: i64 = name_end - text.char_count();
                         return Result::Err(this.error_span(ErrorKind::GroupNameDuplicate, name_start, name_end));
                     }
                 }
@@ -574,7 +619,7 @@ private type struct Parser {
         return Result::Ok(GroupOpen::Group(capturing, index, saved, start));
     }
 
-    enter_nesting(mut &this, start: i64) -> Result<(), Error> {
+    private enter_nesting(mut &this, start: i64) -> Result<(), Error> {
         if (this.depth >= this.options.nest_limit) {
             return Result::Err(this.error_span(ErrorKind::NestLimitExceeded, start, start + 1));
         }
@@ -584,13 +629,13 @@ private type struct Parser {
 
     /// A group name up to `close`, which is consumed. Names are ASCII
     /// letters, digits and underscores, not starting with a digit.
-    parse_group_name(mut &this, close: u32) -> Result<Str, Error> {
+    private parse_group_name(mut &this, close: u32) -> Result<Str, Error> {
         const start: i64 = this.position;
         while (!this.at_end() && this.current() != close) {
             const c: u32 = this.current();
             const first: boolean = this.position == start;
             const valid: boolean = c == 0x5F || (c < 0x80 && (c as u8).is_alpha())
-                || (!first && is_decimal(c));
+                || (!first && (c as char).is_digit());
             if (!valid) {
                 return Result::Err(this.error_here(ErrorKind::GroupNameInvalid));
             }
@@ -610,7 +655,7 @@ private type struct Parser {
     /// Flag letters after `(?`, through the `:` or `)` that ends them.
     /// Answers true for `:` (the flags scope a group), false for `)` (the
     /// flags apply to the rest of the enclosing group).
-    parse_flags(mut &this) -> Result<boolean, Error> {
+    private parse_flags(mut &this) -> Result<boolean, Error> {
         const start: i64 = this.position;
         mut negated: boolean = false;
         mut dangling: boolean = false;
@@ -665,7 +710,7 @@ private type struct Parser {
     // Literals, dot and classes as nodes
 
     /// The node for one literal scalar, folded when case-insensitive.
-    scalar_literal(mut &this, scalar: u32) -> u32 {
+    private scalar_literal(mut &this, scalar: u32) -> u32 {
         if (this.flags.case_insensitive) {
             mut set: ClassRanges = ClassRanges::range(scalar, scalar);
             if (this.flags.unicode) {
@@ -674,37 +719,37 @@ private type struct Parser {
                 set.fold_ascii();
             }
             if (set.single_value().is_none()) {
-                return this.hir.add_class(set, false);
+                return this.tree.add_class(set, false);
             }
         }
         mut encoded: String = String::new();
         encoded.push_char(scalar as char);
-        return this.hir.add_literal(encoded.as_bytes());
+        return this.tree.add_literal(encoded.as_bytes());
     }
 
     /// The node for one byte from a numeric escape with Unicode mode off.
-    byte_literal(mut &this, start: i64, byte: u8) -> Result<u32, Error> {
+    private byte_literal(mut &this, start: i64, byte: u8) -> Result<u32, Error> {
         if (byte < 0x80) {
             return Result::Ok(this.scalar_literal(byte as u32));
         }
-        if (this.options.utf8) {
+        if (this.options.utf8_only) {
             return Result::Err(this.error_span(ErrorKind::InvalidUtf8, start, this.position));
         }
         mut one: [u8; 1] = [byte];
-        return Result::Ok(this.hir.add_literal(Slice::from_raw(&one[0], 1)));
+        return Result::Ok(this.tree.add_literal(Slice::from_raw(&one[0], 1)));
     }
 
     /// The node for a finished class, refusing a byte class that reaches
     /// past ASCII in a pattern that must match only UTF-8.
-    class_node(mut &this, start: i64, set: ClassRanges, bytes: boolean) -> Result<u32, Error> {
-        if (bytes && this.options.utf8 && !set.is_empty() && set.maximum() >= 0x80) {
+    private class_node(mut &this, start: i64, set: ClassRanges, bytes: boolean) -> Result<u32, Error> {
+        if (bytes && this.options.utf8_only&& !set.is_empty() && set.maximum() >= 0x80) {
             return Result::Err(this.error_span(ErrorKind::InvalidUtf8, start, this.position));
         }
-        return Result::Ok(this.hir.add_class(set, bytes));
+        return Result::Ok(this.tree.add_class(set, bytes));
     }
 
     /// `.`: any scalar (or byte) except `\n`, or any at all with `s`.
-    dot(mut &this, start: i64) -> Result<u32, Error> {
+    private dot(mut &this, start: i64) -> Result<u32, Error> {
         const maximum: u32 = if (this.flags.unicode) { MAX_SCALAR } else { MAX_BYTE };
         mut set: ClassRanges = ClassRanges::new();
         if (!this.flags.dot_matches_new_line) {
@@ -716,7 +761,7 @@ private type struct Parser {
 
     /// The scalars of `\Q...\E` (or `\Q` to the end), each its own literal
     /// item so that a repetition after them repeats only the last.
-    parse_quoted(mut &this, items: mut &Array<u32>) -> void {
+    private parse_quoted(mut &this, items: mut &Array<u32>) -> void {
         while (!this.at_end()) {
             const c: u32 = this.current();
             if (c == BACKSLASH && this.is_ahead(1, 0x45)) { // `\E`
@@ -734,7 +779,7 @@ private type struct Parser {
 
     /// At a `\`: what the escape means. Inside a class (`in_class`), `\b`
     /// is a backspace and the assertions are refused.
-    parse_escape(mut &this, in_class: boolean, set: mut &ClassRanges) -> Result<Escape, Error> {
+    private parse_escape(mut &this, in_class: boolean, set: mut &ClassRanges) -> Result<Escape, Error> {
         const start: i64 = this.position;
         this.bump();
         if (this.at_end()) {
@@ -759,24 +804,24 @@ private type struct Parser {
         if (letter == 0x65) { return Result::Ok(Escape::Scalar(0x1B)); } // \e
         if (letter == 0x62) {                                             // \b
             if (in_class) { return Result::Ok(Escape::Scalar(0x08)); }
-            const look: Look = if (this.flags.unicode) { Look::WordBoundaryUnicode } else { Look::WordBoundaryAscii };
-            return Result::Ok(Escape::Look(look));
+            const assertion: Assertion = if (this.flags.unicode) { Assertion::WordBoundaryUnicode } else { Assertion::WordBoundaryAscii };
+            return Result::Ok(Escape::Assertion(assertion));
         }
         if (letter == 0x42) {                                             // \B
             if (in_class) { return Result::Err(this.error_span(ErrorKind::ClassEscapeInvalid, start, this.position)); }
-            const look: Look = if (this.flags.unicode) { Look::NotWordBoundaryUnicode } else { Look::NotWordBoundaryAscii };
-            return Result::Ok(Escape::Look(look));
+            const assertion: Assertion = if (this.flags.unicode) { Assertion::NotWordBoundaryUnicode } else { Assertion::NotWordBoundaryAscii };
+            return Result::Ok(Escape::Assertion(assertion));
         }
         if (letter == 0x41 || letter == 0x7A || letter == 0x5A) {          // \A \z \Z
             if (in_class) { return Result::Err(this.error_span(ErrorKind::ClassEscapeInvalid, start, this.position)); }
-            const look: Look = if (letter == 0x41) { Look::Start } else {
-                if (letter == 0x7A) { Look::End } else { Look::EndBeforeFinalNewline }
+            const assertion: Assertion = if (letter == 0x41) { Assertion::Start } else {
+                if (letter == 0x7A) { Assertion::End } else { Assertion::EndBeforeFinalNewline }
             };
-            return Result::Ok(Escape::Look(look));
+            return Result::Ok(Escape::Assertion(assertion));
         }
         if (letter == 0x64 || letter == 0x73 || letter == 0x77
                 || letter == 0x44 || letter == 0x53 || letter == 0x57) {   // \d \s \w \D \S \W
-            return Result::Ok(Escape::Class(this.perl_class(letter, set)));
+            return Result::Ok(Escape::Class(this.shorthand_class(letter, set)));
         }
         if (letter == 0x68 || letter == 0x76 || letter == 0x48 || letter == 0x56) { // \h \v \H \V
             return Result::Ok(Escape::Class(this.space_class(letter, set)));
@@ -796,7 +841,7 @@ private type struct Parser {
             return Result::Ok(Escape::Class(!this.flags.unicode));
         }
         if (letter == 0x78) {                                              // \x
-            return Result::Ok(this.scalar_or_byte(this.parse_hex_escape(start)?));
+            return Result::Ok(this.scalar_or_byte(this.parse_hexadecimal_escape(start)?));
         }
         if (letter == 0x6F) {                                              // \o{...}
             return Result::Ok(this.scalar_or_byte(this.parse_braced_number(start, 8)?));
@@ -846,7 +891,7 @@ private type struct Parser {
 
     /// A numeric escape's value: a scalar, or with Unicode mode off a byte
     /// when it is below 0x100.
-    scalar_or_byte(&this, value: u32) -> Escape {
+    private scalar_or_byte(&this, value: u32) -> Escape {
         if (!this.flags.unicode && value <= 0xFF) {
             return Escape::Byte(value as u8);
         }
@@ -854,7 +899,7 @@ private type struct Parser {
     }
 
     /// After `\x`: two hex digits, or any number in braces.
-    parse_hex_escape(mut &this, start: i64) -> Result<u32, Error> {
+    private parse_hexadecimal_escape(mut &this, start: i64) -> Result<u32, Error> {
         if (this.is(0x7B)) {
             return this.parse_braced_number(start, 16);
         }
@@ -865,7 +910,7 @@ private type struct Parser {
             }
             const digit: i32 = (this.current() as char).hex_value();
             if (this.current() >= 0x80 || digit < 0) {
-                return Result::Err(this.error_here(ErrorKind::EscapeHexInvalidDigit));
+                return Result::Err(this.error_here(ErrorKind::EscapeNumericInvalidDigit));
             }
             value = value * 16 + digit as u32;
             this.bump();
@@ -874,7 +919,7 @@ private type struct Parser {
     }
 
     /// At `{`: digits of `radix` up to `}`, naming a scalar value.
-    parse_braced_number(mut &this, start: i64, radix: u32) -> Result<u32, Error> {
+    private parse_braced_number(mut &this, start: i64, radix: u32) -> Result<u32, Error> {
         if (!this.is(0x7B)) {
             return Result::Err(this.error_span(ErrorKind::EscapeUnrecognized, start, this.position));
         }
@@ -892,7 +937,7 @@ private type struct Parser {
                 digit = (c as char).hex_value() as i64;
             }
             if (digit < 0 || digit >= radix as i64) {
-                return Result::Err(this.error_here(ErrorKind::EscapeHexInvalidDigit));
+                return Result::Err(this.error_here(ErrorKind::EscapeNumericInvalidDigit));
             }
             if (value <= 0x10FFFF) {
                 value = value * (radix as u64) + digit as u64;
@@ -900,28 +945,28 @@ private type struct Parser {
             this.bump();
         }
         if (this.position == digits_start) {
-            return Result::Err(this.error_span(ErrorKind::EscapeHexEmpty, start, this.position + 1));
+            return Result::Err(this.error_span(ErrorKind::EscapeNumericEmpty, start, this.position + 1));
         }
         this.bump();
         if (value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) {
-            return Result::Err(this.error_span(ErrorKind::EscapeHexInvalid, start, this.position));
+            return Result::Err(this.error_span(ErrorKind::EscapeNumericInvalid, start, this.position));
         }
         return Result::Ok(value as u32);
     }
 
     /// After `\N`, at `{`: `U+` and hex digits. Character names are not
     /// supported.
-    parse_named_scalar(mut &this, start: i64) -> Result<u32, Error> {
+    private parse_named_scalar(mut &this, start: i64) -> Result<u32, Error> {
         if (this.is_ahead(1, 0x55) && this.is_ahead(2, 0x2B)) { // "U+"
             this.bump();
             this.bump();
-            return this.parse_hex_after_plus(start);
+            return this.parse_hexadecimal_after_plus(start);
         }
         return Result::Err(this.error_span(ErrorKind::UnsupportedEscape, start, this.position + 1));
     }
 
     /// At the `+` of `\N{U+`: hex digits up to `}`.
-    parse_hex_after_plus(mut &this, start: i64) -> Result<u32, Error> {
+    private parse_hexadecimal_after_plus(mut &this, start: i64) -> Result<u32, Error> {
         this.bump();
         const digits_start: i64 = this.position;
         mut value: u64 = 0;
@@ -929,7 +974,7 @@ private type struct Parser {
             const c: u32 = this.current();
             const digit: i32 = if (c < 0x80) { (c as char).hex_value() } else { -1 };
             if (digit < 0) {
-                return Result::Err(this.error_here(ErrorKind::EscapeHexInvalidDigit));
+                return Result::Err(this.error_here(ErrorKind::EscapeNumericInvalidDigit));
             }
             if (value <= 0x10FFFF) { value = value * 16 + digit as u64; }
             this.bump();
@@ -938,22 +983,22 @@ private type struct Parser {
             return Result::Err(this.error_span(ErrorKind::EscapeUnexpectedEnd, start, this.position));
         }
         if (this.position == digits_start) {
-            return Result::Err(this.error_span(ErrorKind::EscapeHexEmpty, start, this.position + 1));
+            return Result::Err(this.error_span(ErrorKind::EscapeNumericEmpty, start, this.position + 1));
         }
         this.bump();
         if (value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) {
-            return Result::Err(this.error_span(ErrorKind::EscapeHexInvalid, start, this.position));
+            return Result::Err(this.error_span(ErrorKind::EscapeNumericInvalid, start, this.position));
         }
         return Result::Ok(value as u32);
     }
 
     /// `\d \s \w` and their negations into `class`; answers whether the
     /// class is over bytes (Unicode mode off).
-    perl_class(&this, letter: u8, set: mut &ClassRanges) -> boolean {
+    private shorthand_class(&this, letter: u8, set: mut &ClassRanges) -> boolean {
         const lower: u8 = letter.to_ascii_lowercase();
         if (this.flags.unicode) {
-            const table: &Slice<u32> = if (lower == 0x64) { unicode::perl_digit() } else {
-                if (lower == 0x73) { unicode::perl_space() } else { unicode::perl_word() }
+            const table: &Slice<u32> = if (lower == 0x64) { UnicodeTables::digit_class() } else {
+                if (lower == 0x73) { UnicodeTables::space_class() } else { UnicodeTables::word_class() }
             };
             const ranges: ClassRanges = ClassRanges::from_table(table);
             set.union(&ranges);
@@ -977,9 +1022,9 @@ private type struct Parser {
         return !this.flags.unicode;
     }
 
-    /// `\h` (horizontal space) and `\v` (vertical space), as the Perl
-    /// family defines them, and their negations.
-    space_class(&this, letter: u8, set: mut &ClassRanges) -> boolean {
+    /// `\h` (horizontal space) and `\v` (vertical space), and their
+    /// negations.
+    private space_class(&this, letter: u8, set: mut &ClassRanges) -> boolean {
         const lower: u8 = letter.to_ascii_lowercase();
         if (lower == 0x68) {
             set.push(0x09, 0x09);
@@ -1009,7 +1054,7 @@ private type struct Parser {
 
     /// After `\p` or `\P`: a one-letter name or a braced one, into
     /// `class`, folded when case-insensitive.
-    parse_unicode_class(mut &this, start: i64, negated: boolean, set: mut &ClassRanges) -> Result<(), Error> {
+    private parse_unicode_class(mut &this, start: i64, negated: boolean, set: mut &ClassRanges) -> Result<(), Error> {
         if (!this.flags.unicode) {
             return Result::Err(this.error_span(ErrorKind::UnicodeNotAllowed, start, this.position));
         }
@@ -1021,7 +1066,7 @@ private type struct Parser {
         mut negate: boolean = negated;
         if (this.is(0x7B)) {
             this.bump();
-            if (this.is(0x5E)) { // `\p{^Greek}` negates, as in the Perl family
+            if (this.is(0x5E)) { // `\p{^Greek}` negates
                 negate = !negate;
                 this.bump();
             }
@@ -1039,7 +1084,7 @@ private type struct Parser {
             this.bump();
         }
         const body: Str = this.pattern.byte_substring(this.offset(name_start), this.offset(name_end));
-        match (unicode::property_table(body)) {
+        match (UnicodeProperties::table(body)) {
             Result::Ok(table) => {
                 const ranges: ClassRanges = ClassRanges::from_table(table);
                 set.union(&ranges);
@@ -1062,7 +1107,7 @@ private type struct Parser {
 
     /// At a `[`: the class's node. Nested classes are kept on an explicit
     /// stack, as groups are.
-    parse_class(mut &this) -> Result<u32, Error> {
+    private parse_class(mut &this) -> Result<u32, Error> {
         const start: i64 = this.position;
         mut enclosing: Array<OpenClass> = Array::new();
         mut current: OpenClass = this.open_class()?;
@@ -1106,7 +1151,7 @@ private type struct Parser {
     }
 
     /// At a `[`: the class it opens, past the `[` and any `^`.
-    open_class(mut &this) -> Result<OpenClass, Error> {
+    private open_class(mut &this) -> Result<OpenClass, Error> {
         const start: i64 = this.position;
         this.enter_nesting(start)?;
         this.bump();
@@ -1128,7 +1173,7 @@ private type struct Parser {
 
     /// The set a class denotes once its `]` is read: its operands joined,
     /// folded when case-insensitive, then negated if it began with `^`.
-    close_class(&this, open: mut &OpenClass) -> ClassRanges {
+    private close_class(&this, open: mut &OpenClass) -> ClassRanges {
         open.combine();
         mut set: ClassRanges = ClassRanges::new();
         mem::swap(&set, &open.left);
@@ -1142,7 +1187,7 @@ private type struct Parser {
     }
 
     /// True at `&&`, `--` or `~~`, which separate a class's operands.
-    at_class_operator(&this) -> boolean {
+    private at_class_operator(&this) -> boolean {
         if (this.at_end()) { return false; }
         const c: u32 = this.current();
         return (c == 0x26 || c == 0x2D || c == 0x7E) && this.is_ahead(1, c);
@@ -1150,7 +1195,7 @@ private type struct Parser {
 
     /// One item of a class operand into `out`: a scalar or a range of
     /// them, or an escaped class.
-    parse_class_item(mut &this, out: mut &ClassRanges) -> Result<(), Error> {
+    private parse_class_item(mut &this, out: mut &ClassRanges) -> Result<(), Error> {
         const item_start: i64 = this.position;
         const atom: Option<u32> = this.parse_class_atom(out)?;
         if (atom.is_none()) { return Result::Ok(()); }
@@ -1180,7 +1225,7 @@ private type struct Parser {
     /// One class item that is a single value (a literal or a numeric
     /// escape) answered as that value; an escaped class is unioned into
     /// `out` and answers `None`.
-    parse_class_atom(mut &this, out: mut &ClassRanges) -> Result<Option<u32>, Error> {
+    private parse_class_atom(mut &this, out: mut &ClassRanges) -> Result<Option<u32>, Error> {
         const start: i64 = this.position;
         const c: u32 = this.current();
         if (c != BACKSLASH) {
@@ -1206,7 +1251,7 @@ private type struct Parser {
                 out.union(&escaped);
                 return Result::Ok(Option::None);
             }
-            Escape::Look(_) => {
+            Escape::Assertion(_) => {
                 return Result::Err(this.error_span(ErrorKind::ClassEscapeInvalid, start, this.position));
             }
             Escape::QuoteStart => {
@@ -1221,7 +1266,7 @@ private type struct Parser {
     /// At `[:`: a POSIX class through `:]` unioned into `out`. Answers
     /// false, consuming nothing, when the text is not one (`[:a]` is the
     /// nested class of `:` and `a`).
-    try_posix_class(mut &this, out: mut &ClassRanges) -> Result<boolean, Error> {
+    private try_posix_class(mut &this, out: mut &ClassRanges) -> Result<boolean, Error> {
         const start: i64 = this.position;
         mut at: i64 = start + 2;
         mut negated: boolean = false;
@@ -1239,7 +1284,7 @@ private type struct Parser {
         }
         const name: Str = this.pattern.byte_substring(this.offset(name_start), this.offset(name_end));
         mut set: ClassRanges = ClassRanges::new();
-        if (!posix_class(name, &set)) {
+        if (!Parser::posix_class(name, &set)) {
             return Result::Err(this.error_span(ErrorKind::ClassPosixUnrecognized, start, at + 2));
         }
         if (negated) {
@@ -1257,60 +1302,3 @@ private type struct Count {
     max: u32;
 }
 
-/// The ASCII class a POSIX name denotes, into `set`; false for an unknown name.
-private function posix_class(name: Str, set: mut &ClassRanges) -> boolean {
-    if (name == Str::new("alnum"))  { set.push(0x30, 0x39); set.push(0x41, 0x5A); set.push(0x61, 0x7A); }
-    else if (name == Str::new("alpha"))  { set.push(0x41, 0x5A); set.push(0x61, 0x7A); }
-    else if (name == Str::new("ascii"))  { set.push(0x00, 0x7F); }
-    else if (name == Str::new("blank"))  { set.push(0x09, 0x09); set.push(0x20, 0x20); }
-    else if (name == Str::new("cntrl"))  { set.push(0x00, 0x1F); set.push(0x7F, 0x7F); }
-    else if (name == Str::new("digit"))  { set.push(0x30, 0x39); }
-    else if (name == Str::new("graph"))  { set.push(0x21, 0x7E); }
-    else if (name == Str::new("lower"))  { set.push(0x61, 0x7A); }
-    else if (name == Str::new("print"))  { set.push(0x20, 0x7E); }
-    else if (name == Str::new("punct"))  { set.push(0x21, 0x2F); set.push(0x3A, 0x40); set.push(0x5B, 0x60); set.push(0x7B, 0x7E); }
-    else if (name == Str::new("space"))  { set.push(0x09, 0x0D); set.push(0x20, 0x20); }
-    else if (name == Str::new("upper"))  { set.push(0x41, 0x5A); }
-    else if (name == Str::new("word"))   { set.push(0x30, 0x39); set.push(0x41, 0x5A); set.push(0x5F, 0x5F); set.push(0x61, 0x7A); }
-    else if (name == Str::new("xdigit")) { set.push(0x30, 0x39); set.push(0x41, 0x46); set.push(0x61, 0x66); }
-    else { return false; }
-    set.canonicalize();
-    return true;
-}
-
-/// A `(?` followed by `c` (and `next`) that opens a recursion, subroutine
-/// call, conditional or branch reset group.
-private function is_unsupported_group_start(c: u32, next: Option<u32>) -> boolean {
-    if (c == 0x7C || c == 0x28 || c == 0x52 || c == 0x26) { return true; } // | ( R &
-    if (is_decimal(c)) { return true; }
-    if (c == 0x2B || c == 0x2D) {                                         // (?+1) (?-1)
-        return match (next) {
-            Option::Some(n) => { is_decimal(n) }
-            Option::None => { false }
-        };
-    }
-    return false;
-}
-
-private function is_decimal(c: u32) -> boolean {
-    return c >= 0x30 && c <= 0x39;
-}
-
-/// `value * 10 + digit`, held at a value past any count's limit.
-private function saturating_decimal(value: u64, digit: u32) -> u64 {
-    if (value > 0xFFFFFFFF) { return value; }
-    return value * 10 + (digit - 0x30) as u64;
-}
-
-/// Whitespace verbose mode ignores: the Pattern_White_Space property.
-private function is_pattern_whitespace(c: u32) -> boolean {
-    return (c >= 0x09 && c <= 0x0D) || c == 0x20 || c == 0x85
-        || c == 0x200E || c == 0x200F || c == 0x2028 || c == 0x2029;
-}
-
-/// The number of scalars in `text`.
-private function char_count(text: Str) -> i64 {
-    mut count: i64 = 0;
-    for (scalar in text.chars()) { count = count + 1; }
-    return count;
-}

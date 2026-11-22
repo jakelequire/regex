@@ -1,7 +1,7 @@
 ///! Hand-written matching cases, covering what the differential cases
 ///! cannot: Unicode classes and case folding, every flag, the anchors,
 ///! iteration over successive matches, and bracketed class operations.
-///! Each case lists every match `find_iter` yields, as `start-end` byte
+///! Each case lists every match `find_all` yields, as `start-end` byte
 ///! spans separated by spaces; an empty list means no match.
 
 ![config(testing)]
@@ -71,7 +71,7 @@ private const CASES: [Case; 106] = [
     Case { pattern: "\\b\u{e9}", haystack: "\u{e9}t\u{e9}", expected: "0-2" },
     Case { pattern: "(?-u:\\b)x", haystack: "\u{e9}x", expected: "2-3" },
     Case { pattern: "\\bx", haystack: "\u{e9}x", expected: "" },
-    // Perl classes, Unicode and ASCII
+    // Shorthand classes, Unicode and ASCII
     Case { pattern: "\\d+", haystack: "x\u{661}\u{662}\u{663}9", expected: "1-8" },
     Case { pattern: "(?-u)\\d+", haystack: "x\u{661}9", expected: "3-4" },
     Case { pattern: "\\w+", haystack: "h\u{e9}llo_1 \u{4e16}\u{754c}", expected: "0-8 9-15" },
@@ -140,19 +140,6 @@ private const CASES: [Case; 106] = [
     Case { pattern: "(?x)[ ]", haystack: "a b", expected: "1-2" },
 ];
 
-private function spans(re: &Regex, haystack: Str) -> String {
-    mut out: String = String::new();
-    mut first: boolean = true;
-    for (m in re.find_iter(haystack)) {
-        if (!first) { out.push_byte(0x20); }
-        first = false;
-        out.push(m.start());
-        out.push_byte(0x2D);
-        out.push(m.end());
-    }
-    return out;
-}
-
 ![test]
 function every_case_matches_as_listed() -> Result<(), TestError> {
     mut failures: i64 = 0;
@@ -166,8 +153,14 @@ function every_case_matches_as_listed() -> Result<(), TestError> {
                 failures = failures + 1;
                 report.push(f"\n  {pattern:?}: refused: {error.describe()}");
             }
-            Result::Ok(re) => {
-                const got: String = spans(&re, haystack);
+            Result::Ok(expression) => {
+                mut got: String = String::new();
+                for (found in expression.find_all(haystack)) {
+                    if (got.length() > 0) { got.push_byte(0x20); }
+                    got.push(found.start());
+                    got.push_byte(0x2D);
+                    got.push(found.end());
+                }
                 if (got.as_str() != Str::new(case.expected)) {
                     failures = failures + 1;
                     report.push(f"\n  {pattern:?} on {haystack:?}: expected [{case.expected}], got [{got.as_str()}]");

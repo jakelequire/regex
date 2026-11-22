@@ -1,4 +1,4 @@
-///! Compiler: `Hir` to `Nfa` by Thompson's construction.
+///! Compiler: `SyntaxTree` to `Automaton` by Thompson's construction.
 ///!
 ///! Each node compiles to a fragment: a start state and an end state whose
 ///! successor is still a `HOLE`, to be patched to whatever follows. A
@@ -20,42 +20,16 @@ import std::collections::array::{ Array };
 import std::collections::hashmap::{ HashMap };
 import std::collections::str::{ Str };
 import regex::error::{ Error, ErrorKind };
-import regex::nfa::{ Nfa, State, Transition, HOLE };
-import regex::syntax::hir::{ Hir, HirNode, HirClass, UNBOUNDED };
+import regex::automaton::{ Automaton, State, Transition, HOLE };
+import regex::syntax::tree::{ SyntaxTree, SyntaxNode, SyntaxClass, UNBOUNDED };
 import regex::syntax::intervals::{ ClassRanges, Interval };
 import regex::utf8::{ Utf8Sequence };
-import regex::utf8;
 
 /// A compiled part of the pattern: entered at `start`, left through the
 /// hole of `end`.
 private type struct Fragment {
     start: u32;
     end: u32;
-}
-
-/// Compile `hir` with `slot_count` capture slots. `utf8` marks a text
-/// regex. `size_limit` bounds the automaton's memory, in bytes.
-internal function compile(hir: &Hir, slot_count: u32, utf8_only: boolean, size_limit: i64, pattern: Str) -> Result<Nfa, Error> {
-    mut compiler: Compiler = Compiler {
-        nfa: Nfa {
-            states: Array::new(),
-            transitions: Array::new(),
-            alternates: Array::new(),
-            start: 0,
-            slot_count: slot_count,
-            utf8: utf8_only,
-            has_look: false,
-        },
-        size_limit: size_limit,
-        pattern: pattern,
-        empty_able: empty_able_nodes(hir),
-    };
-    const body: Fragment = compiler.compile_tree(hir)?;
-    const done: u32 = compiler.add(State::Match)?;
-    compiler.patch(body.end, done);
-    compiler.nfa.start = body.start;
-    compiler.collapse_empty_chains();
-    return Result::Ok(compiler.finish());
 }
 
 /// A step of the compiler's walk over the tree.
@@ -67,47 +41,81 @@ private type enum Task {
     Build(u32);
 }
 
-private type struct Compiler {
-    nfa: Nfa;
-    size_limit: i64;
-    pattern: Str;
+internal type struct Compiler {
+    private automaton: Automaton;
+    private size_limit: i64;
+    private pattern: Str;
     /// For each node, whether it can match the empty string.
-    empty_able: Array<boolean>;
+    private matches_empty: Array<boolean>;
 
-    finish(mut this) -> Nfa {
-        const { nfa, size_limit, pattern, empty_able }: Compiler = this;
-        return nfa;
+    /// Compile `tree` with `slot_count` capture slots. `utf8_only` marks a
+    /// text regex. `size_limit` bounds the automaton's memory, in bytes.
+    internal static compile(tree: &SyntaxTree, slot_count: u32, utf8_only: boolean, size_limit: i64, pattern: Str) -> Result<Automaton, Error> {
+        mut compiler: Compiler = Compiler {
+            automaton: Automaton {
+                states: Array::new(),
+                transitions: Array::new(),
+                alternates: Array::new(),
+                start: 0,
+                slot_count: slot_count,
+                utf8_only: utf8_only,
+            },
+            size_limit: size_limit,
+            pattern: pattern,
+            matches_empty: tree.nodes_matching_empty(),
+        };
+        const body: Fragment = compiler.compile_tree(tree)?;
+        const done: u32 = compiler.add(State::Match)?;
+        compiler.patch(body.end, done);
+        compiler.automaton.start = body.start;
+        compiler.collapse_empty_chains();
+        return Result::Ok(compiler.finish());
     }
 
-    too_big(&this) -> Error {
+    /// How many compiled copies of its operand a repetition needs: one for
+    /// a loop with no required copy, `min` for one with (the last copy
+    /// loops), and `max` for a bounded one.
+    private static repetition_copies(min: u32, max: u32) -> u32 {
+        if (max == UNBOUNDED) {
+            return if (min == 0) { 1 } else { min };
+        }
+        return max;
+    }
+
+    private finish(mut this) -> Automaton {
+        const { automaton, size_limit, pattern, matches_empty }: Compiler = this;
+        return automaton;
+    }
+
+    private too_big(&this) -> Error {
         return Error::new(ErrorKind::SizeLimitExceeded, this.pattern, 0, this.pattern.length());
     }
 
-    add(mut &this, state: State) -> Result<u32, Error> {
-        this.nfa.states.push(state);
-        if (this.nfa.memory_usage() > this.size_limit) {
+    private add(mut &this, state: State) -> Result<u32, Error> {
+        this.automaton.states.push(state);
+        if (this.automaton.memory_usage() > this.size_limit) {
             return Result::Err(this.too_big());
         }
-        return Result::Ok((this.nfa.states.length() - 1) as u32);
+        return Result::Ok((this.automaton.states.length() - 1) as u32);
     }
 
     /// Fill the hole of `from` with `to`. A binary union's hole is
     /// whichever successor is still a hole.
-    patch(mut &this, from: u32, to: u32) -> void {
-        const replacement: State = match (this.nfa.states[from]) {
+    private patch(mut &this, from: u32, to: u32) -> void {
+        const replacement: State = match (this.automaton.states[from]) {
             State::Empty(_)                   => { State::Empty(to) }
             State::ByteRange(low, high, _)    => { State::ByteRange(low, high, to) }
             State::Capture(slot, _)           => { State::Capture(slot, to) }
-            State::Look(look, _)              => { State::Look(look, to) }
+            State::Assertion(assertion, _)    => { State::Assertion(assertion, to) }
             State::BinaryUnion(first, second) => {
                 first == HOLE ? State::BinaryUnion(to, second) : State::BinaryUnion(first, to)
             }
             other => { other }
         };
-        this.nfa.states[from] = replacement;
+        this.automaton.states[from] = replacement;
     }
 
-    empty(mut &this) -> Result<Fragment, Error> {
+    private empty(mut &this) -> Result<Fragment, Error> {
         const id: u32 = this.add(State::Empty(HOLE))?;
         return Result::Ok(Fragment { start: id, end: id });
     }
@@ -115,46 +123,45 @@ private type struct Compiler {
     /// The fragment for the whole tree. The walk keeps its own stacks - of
     /// tasks, and of the fragments compiled children leave - instead of
     /// recursing, so no nesting depth can exhaust the call stack.
-    compile_tree(mut &this, hir: &Hir) -> Result<Fragment, Error> {
+    private compile_tree(mut &this, tree: &SyntaxTree) -> Result<Fragment, Error> {
         mut tasks: Array<Task> = Array::new();
         mut values: Array<Fragment> = Array::new();
-        tasks.push(Task::Visit(hir.root()));
+        tasks.push(Task::Visit(tree.root()));
         while (tasks.length() > 0) {
             match (tasks.pop().unwrap()) {
                 Task::Visit(id) => {
-                    match (hir.node(id)) {
-                        HirNode::Empty => { values.push(this.empty()?); }
-                        HirNode::Literal(start, length) => {
-                            values.push(this.compile_literal(hir.literal(start, length))?);
+                    match (tree.node(id)) {
+                        SyntaxNode::Empty => { values.push(this.empty()?); }
+                        SyntaxNode::Literal(start, length) => {
+                            values.push(this.compile_literal(tree.literal(start, length))?);
                         }
-                        HirNode::Class(index) => {
-                            const payload: HirClass* = hir.class(index);
+                        SyntaxNode::Class(index) => {
+                            const payload: SyntaxClass* = tree.class(index);
                             if (payload.bytes) {
                                 values.push(this.compile_byte_class(&payload.ranges)?);
                             } else {
                                 values.push(this.compile_scalar_class(&payload.ranges)?);
                             }
                         }
-                        HirNode::Look(look) => {
-                            this.nfa.has_look = true;
-                            const state: u32 = this.add(State::Look(look, HOLE))?;
+                        SyntaxNode::Assertion(assertion) => {
+                            const state: u32 = this.add(State::Assertion(assertion, HOLE))?;
                             values.push(Fragment { start: state, end: state });
                         }
-                        HirNode::Capture(_, sub) => {
+                        SyntaxNode::Capture(_, sub) => {
                             tasks.push(Task::Build(id));
                             tasks.push(Task::Visit(sub));
                         }
-                        HirNode::Concat(first, count) => {
+                        SyntaxNode::Concatenation(first, count) => {
                             tasks.push(Task::Build(id));
-                            this.schedule_children(hir, first, count, &tasks);
+                            this.schedule_children(tree, first, count, &tasks);
                         }
-                        HirNode::Alternation(first, count) => {
+                        SyntaxNode::Alternation(first, count) => {
                             tasks.push(Task::Build(id));
-                            this.schedule_children(hir, first, count, &tasks);
+                            this.schedule_children(tree, first, count, &tasks);
                         }
-                        HirNode::Repetition(min, max, _, sub) => {
+                        SyntaxNode::Repetition(min, max, _, sub) => {
                             tasks.push(Task::Build(id));
-                            const copies: u32 = repetition_copies(min, max);
+                            const copies: u32 = Compiler::repetition_copies(min, max);
                             for (mut i: u32 = 0; i < copies; i++) { tasks.push(Task::Visit(sub)); }
                         }
                     }
@@ -162,8 +169,8 @@ private type struct Compiler {
                 Task::Build(id) => {
                     mut taken: i64 = 0;
                     mut built: Fragment = Fragment { start: 0, end: 0 };
-                    match (hir.node(id)) {
-                        HirNode::Capture(index, _) => {
+                    match (tree.node(id)) {
+                        SyntaxNode::Capture(index, _) => {
                             taken = 1;
                             const body: Fragment = values[values.length() - 1];
                             const open: u32 = this.add(State::Capture(index * 2, HOLE))?;
@@ -172,17 +179,18 @@ private type struct Compiler {
                             this.patch(body.end, close);
                             built = Fragment { start: open, end: close };
                         }
-                        HirNode::Concat(_, count) => {
+                        SyntaxNode::Concatenation(_, count) => {
                             taken = count as i64;
-                            built = this.build_concat(top(&values, taken));
+                            built = this.build_concatenation(values.as_slice().subslice(values.length() - taken, values.length()));
                         }
-                        HirNode::Alternation(_, count) => {
+                        SyntaxNode::Alternation(_, count) => {
                             taken = count as i64;
-                            built = this.build_alternation(top(&values, taken))?;
+                            built = this.build_alternation(values.as_slice().subslice(values.length() - taken, values.length()))?;
                         }
-                        HirNode::Repetition(min, max, greedy, sub) => {
-                            taken = repetition_copies(min, max) as i64;
-                            built = this.build_repetition(top(&values, taken), min, max, greedy, this.empty_able[sub])?;
+                        SyntaxNode::Repetition(min, max, greedy, sub) => {
+                            taken = Compiler::repetition_copies(min, max) as i64;
+                            const copies: &Slice<Fragment> = values.as_slice().subslice(values.length() - taken, values.length());
+                            built = this.build_repetition(copies, min, max, greedy, this.matches_empty[sub])?;
                         }
                         _ => { }
                     }
@@ -196,15 +204,15 @@ private type struct Compiler {
 
     /// Visit tasks for `children[first .. first + count]`, so that they are
     /// compiled - and their fragments stacked - in order.
-    schedule_children(&this, hir: &Hir, first: u32, count: u32, tasks: mut &Array<Task>) -> void {
+    private schedule_children(&this, tree: &SyntaxTree, first: u32, count: u32, tasks: mut &Array<Task>) -> void {
         mut i: u32 = count;
         while (i > 0) {
             i = i - 1;
-            tasks.push(Task::Visit(hir.child(first, i)));
+            tasks.push(Task::Visit(tree.child(first, i)));
         }
     }
 
-    compile_literal(mut &this, bytes: &Slice<u8>) -> Result<Fragment, Error> {
+    private compile_literal(mut &this, bytes: &Slice<u8>) -> Result<Fragment, Error> {
         const first: u32 = this.add(State::ByteRange(bytes[0], bytes[0], HOLE))?;
         mut last: u32 = first;
         for (mut i: i64 = 1; i < bytes.length(); i++) {
@@ -215,7 +223,7 @@ private type struct Compiler {
         return Result::Ok(Fragment { start: first, end: last });
     }
 
-    build_concat(mut &this, parts: &Slice<Fragment>) -> Fragment {
+    private build_concatenation(mut &this, parts: &Slice<Fragment>) -> Fragment {
         mut whole: Fragment = parts[0];
         for (mut i: i64 = 1; i < parts.length(); i++) {
             this.patch(whole.end, parts[i].start);
@@ -224,19 +232,19 @@ private type struct Compiler {
         return whole;
     }
 
-    build_alternation(mut &this, branches: &Slice<Fragment>) -> Result<Fragment, Error> {
+    private build_alternation(mut &this, branches: &Slice<Fragment>) -> Result<Fragment, Error> {
         const join: u32 = this.add(State::Empty(HOLE))?;
-        const alternates_start: u32 = this.nfa.alternates.length() as u32;
+        const alternates_start: u32 = this.automaton.alternates.length() as u32;
         for (branch in branches) {
             this.patch(branch.end, join);
-            this.nfa.alternates.push(branch.start);
+            this.automaton.alternates.push(branch.start);
         }
         const union: u32 = this.add(State::Union(alternates_start, branches.length() as u32))?;
         return Result::Ok(Fragment { start: union, end: join });
     }
 
     /// A split that prefers `preferred` when greedy, the hole otherwise.
-    split(mut &this, greedy: boolean, preferred: u32) -> Result<u32, Error> {
+    private split(mut &this, greedy: boolean, preferred: u32) -> Result<u32, Error> {
         if (greedy) {
             return this.add(State::BinaryUnion(preferred, HOLE));
         }
@@ -244,14 +252,14 @@ private type struct Compiler {
     }
 
     /// Join the compiled copies of a repetition's operand, as many as
-    /// `repetition_copies` asks for. `empty_able` says the operand can
-    /// match the empty string.
-    build_repetition(mut &this, copies: &Slice<Fragment>, min: u32, max: u32, greedy: boolean, empty_able: boolean) -> Result<Fragment, Error> {
+    /// `repetition_copies` asks for. `operand_matches_empty` says the
+    /// operand can match the empty string.
+    private build_repetition(mut &this, copies: &Slice<Fragment>, min: u32, max: u32, greedy: boolean, operand_matches_empty: boolean) -> Result<Fragment, Error> {
         if (max == UNBOUNDED && min == 0) {
             const body: Fragment = copies[0];
             const loop_split: u32 = this.split(greedy, body.start)?;
             this.patch(body.end, loop_split);
-            if (!empty_able) {
+            if (!operand_matches_empty) {
                 // `x*`.
                 return Result::Ok(Fragment { start: loop_split, end: loop_split });
             }
@@ -297,7 +305,7 @@ private type struct Compiler {
     }
 
     /// A class over bytes: one state reading any byte of the set.
-    compile_byte_class(mut &this, ranges: &ClassRanges) -> Result<Fragment, Error> {
+    private compile_byte_class(mut &this, ranges: &ClassRanges) -> Result<Fragment, Error> {
         const join: u32 = this.add(State::Empty(HOLE))?;
         if (ranges.is_empty()) {
             const fail: u32 = this.add(State::Fail)?;
@@ -308,9 +316,9 @@ private type struct Compiler {
             const state: u32 = this.add(State::ByteRange(only.start as u8, only.end as u8, join))?;
             return Result::Ok(Fragment { start: state, end: join });
         }
-        const first: u32 = this.nfa.transitions.length() as u32;
+        const first: u32 = this.automaton.transitions.length() as u32;
         for (interval in ranges.as_slice()) {
-            this.nfa.transitions.push(Transition { low: interval.start as u8, high: interval.end as u8, next: join });
+            this.automaton.transitions.push(Transition { low: interval.start as u8, high: interval.end as u8, next: join });
         }
         const state: u32 = this.add(State::Sparse(first, ranges.length() as u32))?;
         return Result::Ok(Fragment { start: state, end: join });
@@ -318,7 +326,7 @@ private type struct Compiler {
 
     /// A class over scalars: the minimal byte automaton of its UTF-8
     /// sequences, all ending in one join state.
-    compile_scalar_class(mut &this, ranges: &ClassRanges) -> Result<Fragment, Error> {
+    private compile_scalar_class(mut &this, ranges: &ClassRanges) -> Result<Fragment, Error> {
         const join: u32 = this.add(State::Empty(HOLE))?;
         if (ranges.is_empty()) {
             const fail: u32 = this.add(State::Fail)?;
@@ -328,7 +336,7 @@ private type struct Compiler {
         mut sequences: Array<Utf8Sequence> = Array::new();
         for (interval in ranges.as_slice()) {
             sequences.clear();
-            utf8::sequences(interval.start, interval.end, &sequences);
+            Utf8Sequence::for_range(interval.start, interval.end, &sequences);
             for (sequence in sequences) {
                 builder.add(this, &sequence)?;
             }
@@ -339,12 +347,12 @@ private type struct Compiler {
 
     /// The state reading `transitions`, reusing an identical one already
     /// built for this class.
-    state_for(mut &this, transitions: &Slice<Transition>, cache: mut &HashMap<u64, u32>) -> Result<u32, Error> {
+    private state_for(mut &this, transitions: &Slice<Transition>, cache: mut &HashMap<u64, u32>) -> Result<u32, Error> {
         mut hasher: FnvHasher = FnvHasher::new();
-        for (t in transitions) {
-            hasher.write_unsigned_integer(t.low as u128, 1);
-            hasher.write_unsigned_integer(t.high as u128, 1);
-            hasher.write_unsigned_integer(t.next as u128, 4);
+        for (transition in transitions) {
+            hasher.write_unsigned_integer(transition.low as u128, 1);
+            hasher.write_unsigned_integer(transition.high as u128, 1);
+            hasher.write_unsigned_integer(transition.next as u128, 4);
         }
         const key: u64 = hasher.finish();
         match (cache.get(&key)) {
@@ -358,8 +366,8 @@ private type struct Compiler {
             const only: Transition = transitions[0];
             state = this.add(State::ByteRange(only.low, only.high, only.next))?;
         } else {
-            const first: u32 = this.nfa.transitions.length() as u32;
-            this.nfa.transitions.append(transitions);
+            const first: u32 = this.automaton.transitions.length() as u32;
+            this.automaton.transitions.append(transitions);
             state = this.add(State::Sparse(first, transitions.length() as u32))?;
         }
         cache.insert(key, state);
@@ -367,8 +375,8 @@ private type struct Compiler {
     }
 
     /// True when state `id` reads exactly `transitions`.
-    reads_exactly(&this, id: u32, transitions: &Slice<Transition>) -> boolean {
-        match (this.nfa.states[id]) {
+    private reads_exactly(&this, id: u32, transitions: &Slice<Transition>) -> boolean {
+        match (this.automaton.states[id]) {
             State::ByteRange(low, high, next) => {
                 if (transitions.length() != 1) { return false; }
                 const only: Transition = transitions[0];
@@ -377,9 +385,9 @@ private type struct Compiler {
             State::Sparse(first, count) => {
                 if (transitions.length() != count as i64) { return false; }
                 for (mut i: u32 = 0; i < count; i++) {
-                    const a: Transition = this.nfa.transitions[first + i];
-                    const b: Transition = transitions[i as i64];
-                    if (a.low != b.low || a.high != b.high || a.next != b.next) { return false; }
+                    const built: Transition = this.automaton.transitions[first + i];
+                    const wanted: Transition = transitions[i as i64];
+                    if (built.low != wanted.low || built.high != wanted.high || built.next != wanted.next) { return false; }
                 }
                 return true;
             }
@@ -390,38 +398,38 @@ private type struct Compiler {
     /// Replace every successor that is an `Empty` state by where its chain
     /// of `Empty` states leads, so the matchers step over fewer states.
     /// The `Empty` states themselves stay, unreferenced.
-    collapse_empty_chains(mut &this) -> void {
-        const count: i64 = this.nfa.states.length();
+    private collapse_empty_chains(mut &this) -> void {
+        const count: i64 = this.automaton.states.length();
         for (mut id: i64 = 0; id < count; id++) {
-            const replacement: State = match (this.nfa.states[id]) {
+            const replacement: State = match (this.automaton.states[id]) {
                 State::Empty(next)                => { State::Empty(this.resolve(next)) }
                 State::ByteRange(low, high, next) => { State::ByteRange(low, high, this.resolve(next)) }
                 State::BinaryUnion(first, second) => { State::BinaryUnion(this.resolve(first), this.resolve(second)) }
                 State::Capture(slot, next)        => { State::Capture(slot, this.resolve(next)) }
-                State::Look(look, next)           => { State::Look(look, this.resolve(next)) }
+                State::Assertion(assertion, next) => { State::Assertion(assertion, this.resolve(next)) }
                 other => { other }
             };
-            this.nfa.states[id] = replacement;
+            this.automaton.states[id] = replacement;
         }
-        for (mut i: i64 = 0; i < this.nfa.transitions.length(); i++) {
-            const t: Transition = this.nfa.transitions[i];
-            this.nfa.transitions[i] = Transition { low: t.low, high: t.high, next: this.resolve(t.next) };
+        for (mut i: i64 = 0; i < this.automaton.transitions.length(); i++) {
+            const transition: Transition = this.automaton.transitions[i];
+            this.automaton.transitions[i] = Transition { low: transition.low, high: transition.high, next: this.resolve(transition.next) };
         }
-        for (mut i: i64 = 0; i < this.nfa.alternates.length(); i++) {
-            this.nfa.alternates[i] = this.resolve(this.nfa.alternates[i]);
+        for (mut i: i64 = 0; i < this.automaton.alternates.length(); i++) {
+            this.automaton.alternates[i] = this.resolve(this.automaton.alternates[i]);
         }
-        this.nfa.start = this.resolve(this.nfa.start);
+        this.automaton.start = this.resolve(this.automaton.start);
     }
 
     /// Where a chain of `Empty` states starting at `id` leads. A chain
     /// that loops back on itself (an empty loop) resolves to where the
     /// walk noticed, which is still a state on the chain.
-    resolve(&this, id: u32) -> u32 {
+    private resolve(&this, id: u32) -> u32 {
         mut current: u32 = id;
         mut steps: i64 = 0;
-        const limit: i64 = this.nfa.states.length();
+        const limit: i64 = this.automaton.states.length();
         while (steps < limit) {
-            match (this.nfa.states[current]) {
+            match (this.automaton.states[current]) {
                 State::Empty(next) => {
                     if (next == HOLE) { return current; }
                     current = next;
@@ -510,55 +518,4 @@ private type struct Utf8Builder {
         this.finish_below(compiler, 0)?;
         return compiler.state_for(this.pool.as_slice(), &this.cache);
     }
-}
-
-/// How many compiled copies of its operand a repetition needs: one for a
-/// loop with no required copy, `min` for one with (the last copy loops),
-/// and `max` for a bounded one.
-private function repetition_copies(min: u32, max: u32) -> u32 {
-    if (max == UNBOUNDED) {
-        return if (min == 0) { 1 } else { min };
-    }
-    return max;
-}
-
-/// The `count` fragments on top of `values`, oldest first.
-private function top(values: &Array<Fragment>, count: i64) -> &Slice<Fragment> {
-    return values.as_slice().subslice(values.length() - count, values.length());
-}
-
-/// For every node, whether it can match the empty string. A node's
-/// children are always built before it, so one pass in index order sees
-/// every child's answer before its parent's.
-private function empty_able_nodes(hir: &Hir) -> Array<boolean> {
-    const count: i64 = hir.node_count();
-    mut empty_able: Array<boolean> = Array::with_capacity(count);
-    for (mut id: i64 = 0; id < count; id++) {
-        const answer: boolean = match (hir.node(id as u32)) {
-            HirNode::Empty => { true }
-            HirNode::Literal(_, _) => { false }
-            HirNode::Class(_) => { false }
-            HirNode::Look(_) => { true }
-            HirNode::Capture(_, sub) => { empty_able[sub] }
-            HirNode::Repetition(min, _, _, sub) => { min == 0 || empty_able[sub] }
-            HirNode::Concat(first, length) => { all_empty_able(hir, &empty_able, first, length) }
-            HirNode::Alternation(first, length) => { any_empty_able(hir, &empty_able, first, length) }
-        };
-        empty_able.push(answer);
-    }
-    return empty_able;
-}
-
-private function all_empty_able(hir: &Hir, empty_able: &Array<boolean>, first: u32, count: u32) -> boolean {
-    for (mut i: u32 = 0; i < count; i++) {
-        if (!empty_able[hir.child(first, i)]) { return false; }
-    }
-    return true;
-}
-
-private function any_empty_able(hir: &Hir, empty_able: &Array<boolean>, first: u32, count: u32) -> boolean {
-    for (mut i: u32 = 0; i < count; i++) {
-        if (empty_able[hir.child(first, i)]) { return true; }
-    }
-    return false;
 }

@@ -4,6 +4,6 @@ namespace regex::syntax;
 
 internal module {
     syntax::intervals;
-    syntax::hir;
+    syntax::tree;
     syntax::parser;
 }

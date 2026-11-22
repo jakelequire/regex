@@ -12,7 +12,7 @@ import std::core::option::{ Option };
 import std::core::slice::{ Slice };
 import std::collections::array::{ Array };
 import std::core::mem;
-import regex::unicode;
+import regex::unicode::tables::{ UnicodeTables };
 
 /// One inclusive range of values.
 internal type struct Interval {
@@ -75,11 +75,6 @@ internal type struct ClassRanges {
     /// The intervals, in order.
     internal as_slice(&this) -> &Slice<Interval> {
         return this.intervals.as_slice();
-    }
-
-    /// The smallest value in the set; the set must not be empty.
-    internal minimum(&this) -> u32 {
-        return this.intervals[0].start;
     }
 
     /// The largest value in the set; the set must not be empty.
@@ -238,13 +233,13 @@ internal type struct ClassRanges {
     /// Add, for every scalar in the set, each scalar that simple case
     /// folding makes equivalent to it.
     internal fold_unicode(mut &this) -> void {
-        const keys: &Slice<u32> = unicode::fold_keys();
+        const keys: &Slice<u32> = UnicodeTables::fold_keys();
         const original: i64 = this.intervals.length();
         for (mut i: i64 = 0; i < original; i++) {
             const interval: Interval = this.intervals[i];
-            mut position: i64 = lower_bound(keys, interval.start);
+            mut position: i64 = ClassRanges::lower_bound(keys, interval.start);
             while (position < keys.length() && keys[position] <= interval.end) {
-                const equivalents: &Slice<u32> = unicode::fold_equivalents(position);
+                const equivalents: &Slice<u32> = UnicodeTables::fold_equivalents(position);
                 for (value in equivalents) {
                     this.intervals.push(Interval { start: value, end: value });
                 }
@@ -273,29 +268,18 @@ internal type struct ClassRanges {
         this.canonicalize();
     }
 
-    /// True when the two sets hold the same values.
-    internal same_as(&this, other: &ClassRanges) -> boolean {
-        if (this.intervals.length() != other.intervals.length()) { return false; }
-        for (mut i: i64 = 0; i < this.intervals.length(); i++) {
-            const a: Interval = this.intervals[i];
-            const b: Interval = other.intervals[i];
-            if (a.start != b.start || a.end != b.end) { return false; }
+    /// The first position in the sorted `values` holding a value `>= target`.
+    private static lower_bound(values: &Slice<u32>, target: u32) -> i64 {
+        mut low: i64 = 0;
+        mut high: i64 = values.length();
+        while (low < high) {
+            const middle: i64 = low + (high - low) / 2;
+            if (values[middle] < target) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
         }
-        return true;
+        return low;
     }
-}
-
-/// The first position in the sorted `values` holding a value `>= target`.
-internal function lower_bound(values: &Slice<u32>, target: u32) -> i64 {
-    mut low: i64 = 0;
-    mut high: i64 = values.length();
-    while (low < high) {
-        const middle: i64 = low + (high - low) / 2;
-        if (values[middle] < target) {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    return low;
 }

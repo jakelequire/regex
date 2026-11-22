@@ -12,11 +12,10 @@
 
 namespace regex::prefilter;
 
-import std::core::slice::{ Slice };
 import std::collections::array::{ Array };
 import std::ffi::libc;
-import regex::nfa::{ Nfa, State, Transition };
-import regex::syntax::hir::{ Hir, HirNode };
+import regex::automaton::{ Automaton };
+import regex::syntax::tree::{ SyntaxTree };
 
 /// How a prefilter finds candidates.
 internal type enum Kind {
@@ -36,30 +35,37 @@ internal type struct Prefilter {
     private allowed: [boolean; 256];
 
     /// The best prefilter for a compiled pattern.
-    internal static build(hir: &Hir, nfa: &Nfa) -> Prefilter {
+    internal static build(tree: &SyntaxTree, automaton: &Automaton) -> Prefilter {
         mut prefilter: Prefilter = Prefilter { kind: Kind::Nothing, literal: Array::new(), allowed: [false; 256] };
         mut count: i64 = 0;
-        if (!first_bytes(nfa, &prefilter.allowed)) {
+        if (!automaton.first_bytes(&prefilter.allowed)) {
             return prefilter;
         }
-        for (mut b: i64 = 0; b < 256; b++) {
-            if (prefilter.allowed[b]) { count = count + 1; }
+        for (mut byte: i64 = 0; byte < 256; byte++) {
+            if (prefilter.allowed[byte]) { count = count + 1; }
         }
         // Rejecting under a fifth of the bytes does not pay for the check.
         if (count == 0 || count > 200) {
             return prefilter;
         }
-        literal_prefix(hir, &prefilter.literal);
+        tree.literal_prefix(&prefilter.literal);
         if (prefilter.literal.length() >= 2) {
             prefilter.kind = Kind::Literal;
         } else if (count == 1) {
-            for (mut b: i64 = 0; b < 256; b++) {
-                if (prefilter.allowed[b]) { prefilter.kind = Kind::Byte(b as u8); }
+            for (mut byte: i64 = 0; byte < 256; byte++) {
+                if (prefilter.allowed[byte]) { prefilter.kind = Kind::Byte(byte as u8); }
             }
         } else {
             prefilter.kind = Kind::ByteSet;
         }
         return prefilter;
+    }
+
+    /// The first `byte` in `[at, end)`, or `end`.
+    private static find_byte(bytes: u8*, at: i64, end: i64, byte: u8) -> i64 {
+        const found: void* = libc::memchr((bytes + at) as void*, byte as i32, (end - at) as u64);
+        if (found == null) { return end; }
+        return ((found as u64) - (bytes as u64)) as i64;
     }
 
     internal is_active(&this) -> boolean {
@@ -75,14 +81,14 @@ internal type struct Prefilter {
         match (this.kind) {
             Kind::Nothing => { return at; }
             Kind::Byte(byte) => {
-                return find_byte(bytes, at, end, byte);
+                return Prefilter::find_byte(bytes, at, end, byte);
             }
             Kind::Literal => {
                 const length: i64 = this.literal.length();
                 const first: u8 = this.literal[0];
                 mut position: i64 = at;
                 while (position < end) {
-                    position = find_byte(bytes, position, end, first);
+                    position = Prefilter::find_byte(bytes, position, end, first);
                     if (position >= end) { return end; }
                     if (position + length > end) { return end; }
                     if (libc::memcmp((bytes + position) as void*, this.literal.as_pointer() as void*, length as u64) == 0) {
@@ -97,66 +103,6 @@ internal type struct Prefilter {
                 while (position < end && !this.allowed[bytes[position] as i64]) { position = position + 1; }
                 return position;
             }
-        }
-    }
-}
-
-/// The first `byte` in `[at, end)`, or `end`.
-private function find_byte(bytes: u8*, at: i64, end: i64, byte: u8) -> i64 {
-    const found: void* = libc::memchr((bytes + at) as void*, byte as i32, (end - at) as u64);
-    if (found == null) { return end; }
-    return ((found as u64) - (bytes as u64)) as i64;
-}
-
-/// Mark in `allowed` every byte a match can begin with. Answers false when
-/// a match can be empty, so that no byte is required. Assertions on the
-/// way are taken to hold, which only makes the set larger.
-private function first_bytes(nfa: &Nfa, allowed: mut &[boolean; 256]) -> boolean {
-    mut seen: Array<boolean> = Array::new();
-    seen.resize(nfa.state_count(), false);
-    mut stack: Array<u32> = Array::new();
-    stack.push(nfa.start);
-    while (stack.length() > 0) {
-        const id: u32 = stack.pop().unwrap();
-        if (seen[id]) { continue; }
-        seen[id] = true;
-        match (nfa.state(id)) {
-            State::Empty(next)          => { stack.push(next); }
-            State::Look(_, next)        => { stack.push(next); }
-            State::Capture(_, next)     => { stack.push(next); }
-            State::BinaryUnion(a, b)    => { stack.push(a); stack.push(b); }
-            State::Union(first, count)  => {
-                for (mut i: u32 = 0; i < count; i++) { stack.push(nfa.alternate(first + i)); }
-            }
-            State::ByteRange(low, high, _) => {
-                for (mut b: u32 = low as u32; b <= high as u32; b++) { allowed[b] = true; }
-            }
-            State::Sparse(first, count) => {
-                for (mut i: u32 = 0; i < count; i++) {
-                    const t: Transition = nfa.transition(first + i);
-                    for (mut b: u32 = t.low as u32; b <= t.high as u32; b++) { allowed[b] = true; }
-                }
-            }
-            State::Match => { return false; }
-            State::Fail => { }
-        }
-    }
-    return true;
-}
-
-/// The literal every match begins with, read off the tree: through the
-/// capture groups and the first item of each sequence to a literal.
-private function literal_prefix(hir: &Hir, out: mut &Array<u8>) -> void {
-    mut id: u32 = hir.root();
-    loop {
-        match (hir.node(id)) {
-            HirNode::Capture(_, sub) => { id = sub; }
-            HirNode::Concat(first, _) => { id = hir.child(first, 0); }
-            HirNode::Literal(start, length) => {
-                out.append(hir.literal(start, length));
-                return;
-            }
-            _ => { return; }
         }
     }
 }

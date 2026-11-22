@@ -1,10 +1,11 @@
 ///! regex: regular expressions for Cryo, matched in linear time.
 ///!
-///! Patterns use the Perl family's syntax, minus the features that cannot
-///! be matched in time linear in the haystack (backreferences,
-///! look-around, atomic groups). Every search runs in time proportional
-///! to the haystack's length times the pattern's size, so a pattern from
-///! an untrusted source cannot make a search take exponential time.
+///! Patterns use the common syntax of regular expressions, minus the
+///! features that cannot be matched in time linear in the haystack
+///! (backreferences, look-around, atomic groups). Every search runs in time
+///! proportional to the haystack's length times the pattern's size, so a
+///! pattern from an untrusted source cannot make a search take exponential
+///! time.
 ///!
 ///! `Regex` (from `regex::text`) searches `Str`; `regex::bytes::Regex`
 ///! searches arbitrary bytes.
@@ -19,12 +20,12 @@ internal module {
     syntax;
     unicode;
     utf8;
-    nfa;
+    automaton;
     compiler;
-    pikevm;
+    search;
     prefilter;
     engine;
 }
 
 export regex::error::{ Error, ErrorKind };
-export regex::text::{ Regex, RegexBuilder, Match, Captures, Matches, CaptureMatches, Split, escape };
+export regex::text::{ Regex, RegexBuilder, Match, Captures, Matches, CaptureMatches, Split };

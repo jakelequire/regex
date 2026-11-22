@@ -6,12 +6,10 @@ namespace regex::unicode::tables;
 
 import std::core::slice::{ Slice };
 
-internal const UNICODE_VERSION: string = "17.0.0";
-
-internal const TABLE_COUNT: i64 = 381;
-internal const PERL_DIGIT: i64 = 18;
-internal const PERL_SPACE: i64 = 374;
-internal const PERL_WORD: i64 = 380;
+/// The tables of the classes `\d`, `\s` and `\w` name in Unicode mode.
+private const DIGIT_TABLE: i64 = 18;
+private const SPACE_TABLE: i64 = 374;
+private const WORD_TABLE: i64 = 380;
 
 /// Every table's ranges, as inclusive start/end pairs, back to back.
 private const RANGES: [u32; 43686] = [
@@ -4696,10 +4694,53 @@ private const FOLD_VALUES: [u32; 3090] = [
     0x1E91C, 0x1E91D, 0x1E91E, 0x1E91F, 0x1E920, 0x1E921,
 ];
 
-/// The ranges of table `id`, flattened as start/end pairs.
-internal function table(id: i64) -> &Slice<u32> {
-    const start: i64 = TABLE_STARTS[id] as i64;
-    return Slice::from_raw(&RANGES[start * 2], TABLE_LENGTHS[id] as i64 * 2);
+private const FOLD_KEY_COUNT: i64 = 2994;
+
+/// The tables above, read by table, by script and by folding key.
+internal type struct UnicodeTables {
+    /// The ranges of table `id`, flattened as start/end pairs.
+    internal static table(id: i64) -> &Slice<u32> {
+        const start: i64 = TABLE_STARTS[id] as i64;
+        return Slice::from_raw(&RANGES[start * 2], TABLE_LENGTHS[id] as i64 * 2);
+    }
+
+    /// `\d` in Unicode mode: General_Category Decimal_Number.
+    internal static digit_class() -> &Slice<u32> {
+        return UnicodeTables::table(DIGIT_TABLE);
+    }
+
+    /// `\s` in Unicode mode: White_Space.
+    internal static space_class() -> &Slice<u32> {
+        return UnicodeTables::table(SPACE_TABLE);
+    }
+
+    /// `\w` in Unicode mode: Alphabetic, marks, decimal numbers, connector
+    /// punctuation and Join_Control, as UTS #18 defines a word character.
+    internal static word_class() -> &Slice<u32> {
+        return UnicodeTables::table(WORD_TABLE);
+    }
+
+    /// The table of script `script`'s Script property.
+    internal static script_table(script: i64) -> i64 {
+        return SCRIPT_TABLES[script] as i64;
+    }
+
+    /// The table of script `script`'s Script_Extensions property.
+    internal static script_extension_table(script: i64) -> i64 {
+        return SCRIPT_EXTENSION_TABLES[script] as i64;
+    }
+
+    /// The scalars with simple case folding equivalents, sorted.
+    internal static fold_keys() -> &Slice<u32> {
+        return Slice::from_raw(&FOLD_KEYS[0], FOLD_KEY_COUNT);
+    }
+
+    /// The scalars that fold together with `fold_keys()[position]`, itself excluded.
+    internal static fold_equivalents(position: i64) -> &Slice<u32> {
+        const start: i64 = FOLD_OFFSETS[position] as i64;
+        const end: i64 = FOLD_OFFSETS[position + 1] as i64;
+        return Slice::from_raw(&FOLD_VALUES[start], end - start);
+    }
 }
 
 /// Which index a property-name lookup searches.
@@ -4709,49 +4750,30 @@ internal type enum NameIndex {
     Boolean;
 }
 
-internal function name_count(index: NameIndex) -> i64 {
-    return match (index) {
-        NameIndex::GeneralCategory => { 80 }
-        NameIndex::Script          => { 346 }
-        NameIndex::Boolean         => { 122 }
-    };
-}
+implement enum NameIndex {
+    internal name_count(&this) -> i64 {
+        return match (this) {
+            NameIndex::GeneralCategory => { 80 }
+            NameIndex::Script          => { 346 }
+            NameIndex::Boolean         => { 122 }
+        };
+    }
 
-internal function name_at(index: NameIndex, position: i64) -> string {
-    return match (index) {
-        NameIndex::GeneralCategory => { GENERAL_CATEGORY_NAMES[position] }
-        NameIndex::Script          => { SCRIPT_NAMES[position] }
-        NameIndex::Boolean         => { BOOLEAN_NAMES[position] }
-    };
-}
+    internal name_at(&this, position: i64) -> string {
+        return match (this) {
+            NameIndex::GeneralCategory => { GENERAL_CATEGORY_NAMES[position] }
+            NameIndex::Script          => { SCRIPT_NAMES[position] }
+            NameIndex::Boolean         => { BOOLEAN_NAMES[position] }
+        };
+    }
 
-/// The entry the name at `position` names: a table for the general
-/// category and boolean indexes, a script for the script index.
-internal function entry_at(index: NameIndex, position: i64) -> i64 {
-    return match (index) {
-        NameIndex::GeneralCategory => { GENERAL_CATEGORY_ENTRIES[position] as i64 }
-        NameIndex::Script          => { SCRIPT_ENTRIES[position] as i64 }
-        NameIndex::Boolean         => { BOOLEAN_ENTRIES[position] as i64 }
-    };
-}
-
-internal function script_table(script: i64) -> i64 {
-    return SCRIPT_TABLES[script] as i64;
-}
-
-internal function script_extension_table(script: i64) -> i64 {
-    return SCRIPT_EXTENSION_TABLES[script] as i64;
-}
-
-internal const FOLD_KEY_COUNT: i64 = 2994;
-
-internal function fold_keys() -> &Slice<u32> {
-    return Slice::from_raw(&FOLD_KEYS[0], FOLD_KEY_COUNT);
-}
-
-/// The scalars that fold together with `fold_keys()[position]`, itself excluded.
-internal function fold_equivalents(position: i64) -> &Slice<u32> {
-    const start: i64 = FOLD_OFFSETS[position] as i64;
-    const end: i64 = FOLD_OFFSETS[position + 1] as i64;
-    return Slice::from_raw(&FOLD_VALUES[start], end - start);
+    /// The entry the name at `position` names: a table for the general
+    /// category and boolean indexes, a script for the script index.
+    internal entry_at(&this, position: i64) -> i64 {
+        return match (this) {
+            NameIndex::GeneralCategory => { GENERAL_CATEGORY_ENTRIES[position] as i64 }
+            NameIndex::Script          => { SCRIPT_ENTRIES[position] as i64 }
+            NameIndex::Boolean         => { BOOLEAN_ENTRIES[position] as i64 }
+        };
+    }
 }

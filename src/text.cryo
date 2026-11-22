@@ -37,6 +37,26 @@ public type struct Regex {
         return Result::Ok(Regex { inner: bytes::Regex::with_config(pattern, &config)? });
     }
 
+    /// `text` with every character that has a meaning in a pattern escaped,
+    /// so that the result matches `text` literally.
+    public static escape(text: Str) -> String {
+        mut out: String = String::with_capacity(text.length());
+        for (byte in text.as_bytes()) {
+            if (Regex::is_meta_byte(byte)) { out.push_byte(0x5C); }
+            out.push_byte(byte);
+        }
+        return out;
+    }
+
+    /// True for the ASCII characters a pattern gives a meaning: the
+    /// operators, and `#` and the space, which verbose mode gives one.
+    public static is_meta_byte(byte: u8) -> boolean {
+        return byte == 0x5C || byte == 0x2E || byte == 0x2B || byte == 0x2A || byte == 0x3F
+            || byte == 0x28 || byte == 0x29 || byte == 0x7C || byte == 0x5B || byte == 0x5D
+            || byte == 0x7B || byte == 0x7D || byte == 0x5E || byte == 0x24 || byte == 0x23
+            || byte == 0x26 || byte == 0x2D || byte == 0x7E || byte == 0x20;
+    }
+
     /// The pattern this regex was compiled from.
     public as_str(&this) -> Str {
         return this.inner.as_str();
@@ -70,8 +90,8 @@ public type struct Regex {
     /// Every successive non-overlapping match, left to right. An empty
     /// match directly after the previous match is skipped, and after an
     /// empty match the search moves on one scalar.
-    public find_iter(&this, haystack: Str) -> Matches {
-        return Matches { inner: this.inner.find_iter(haystack.as_bytes()), haystack: haystack };
+    public find_all(&this, haystack: Str) -> Matches {
+        return Matches { inner: this.inner.find_all(haystack.as_bytes()), haystack: haystack };
     }
 
     /// The leftmost match with the span of every capture group.
@@ -85,8 +105,8 @@ public type struct Regex {
     }
 
     /// The captures of every successive non-overlapping match.
-    public captures_iter(&this, haystack: Str) -> CaptureMatches {
-        return CaptureMatches { inner: this.inner.captures_iter(haystack.as_bytes()), haystack: haystack };
+    public captures_all(&this, haystack: Str) -> CaptureMatches {
+        return CaptureMatches { inner: this.inner.captures_all(haystack.as_bytes()), haystack: haystack };
     }
 
     /// The text between successive matches. A haystack with no match is
@@ -97,25 +117,25 @@ public type struct Regex {
 
     /// `split`, ending after at most `limit` pieces: the last holds the rest
     /// of the haystack. A limit of 0 yields nothing.
-    public splitn(&this, haystack: Str, limit: i64) -> Split {
-        return Split { inner: this.inner.splitn(haystack.as_bytes(), limit) };
+    public split_at_most(&this, haystack: Str, limit: i64) -> Split {
+        return Split { inner: this.inner.split_at_most(haystack.as_bytes(), limit) };
     }
 
     /// `haystack` with its leftmost match replaced by `replacement`,
     /// expanded as `Captures.expand` describes.
     public replace(&this, haystack: Str, replacement: Str) -> String {
-        return this.replacen(haystack, 1, replacement);
+        return this.replace_at_most(haystack, 1, replacement);
     }
 
     /// `haystack` with every match replaced by `replacement`.
     public replace_all(&this, haystack: Str, replacement: Str) -> String {
-        return this.replacen(haystack, -1, replacement);
+        return this.replace_at_most(haystack, -1, replacement);
     }
 
     /// `haystack` with its first `limit` matches replaced; a negative limit
     /// replaces them all.
-    public replacen(&this, haystack: Str, limit: i64, replacement: Str) -> String {
-        const replaced: Array<u8> = this.inner.replacen(haystack.as_bytes(), limit, replacement);
+    public replace_at_most(&this, haystack: Str, limit: i64, replacement: Str) -> String {
+        const replaced: Array<u8> = this.inner.replace_at_most(haystack.as_bytes(), limit, replacement);
         return String::from_str(Str::from(replaced.as_slice()));
     }
 
@@ -227,7 +247,7 @@ public type struct Match {
     /// The text view of a byte match found in `haystack`'s bytes.
     private static of(haystack: Str, found: Option<bytes::Match>) -> Option<Match> {
         return match (found) {
-            Option::Some(m) => { Option::Some(Match { haystack: haystack, start_offset: m.start(), end_offset: m.end() }) }
+            Option::Some(span) => { Option::Some(Match { haystack: haystack, start_offset: span.start(), end_offset: span.end() }) }
             Option::None => { Option::None }
         };
     }
@@ -269,7 +289,7 @@ public type struct Captures {
     private static of(haystack: Str, found: Option<bytes::Captures>) -> Option<Captures> {
         // Released explicitly when empty, so `found` is moved on every path.
         return match (found) {
-            Option::Some(caps) => { Option::Some(Captures { inner: caps, haystack: haystack }) }
+            Option::Some(captures) => { Option::Some(Captures { inner: captures, haystack: haystack }) }
             Option::None => {
                 mem::drop(found);
                 Option::None
@@ -309,7 +329,7 @@ public type struct Captures {
     }
 }
 
-/// Successive non-overlapping matches; see `Regex.find_iter`.
+/// Successive non-overlapping matches; see `Regex.find_all`.
 public type struct Matches {
     private inner: bytes::Matches;
     private haystack: Str;
@@ -322,7 +342,7 @@ implement trait Iterator<Match> for struct Matches {
 }
 
 /// The captures of successive non-overlapping matches; see
-/// `Regex.captures_iter`.
+/// `Regex.captures_all`.
 public type struct CaptureMatches {
     private inner: bytes::CaptureMatches;
     private haystack: Str;
@@ -334,8 +354,8 @@ implement trait Iterator<Captures> for struct CaptureMatches {
     }
 }
 
-/// The text between matches; see `Regex.split` and `Regex.splitn`. Each
-/// piece lies between whole scalars, so it is a `Str` of its own.
+/// The text between matches; see `Regex.split` and `Regex.split_at_most`.
+/// Each piece lies between whole scalars, so it is a `Str` of its own.
 public type struct Split {
     private inner: bytes::Split;
 }
@@ -347,24 +367,4 @@ implement trait Iterator<Str> for struct Split {
             Option::None => { Option::None }
         };
     }
-}
-
-/// `text` with every character that has a meaning in a pattern escaped,
-/// so that the result matches `text` literally.
-public function escape(text: Str) -> String {
-    mut out: String = String::with_capacity(text.length());
-    for (byte in text.as_bytes()) {
-        if (is_meta_byte(byte)) { out.push_byte(0x5C); }
-        out.push_byte(byte);
-    }
-    return out;
-}
-
-/// True for the ASCII characters a pattern gives a meaning: the operators,
-/// and `#` and the space, which verbose mode gives one.
-public function is_meta_byte(byte: u8) -> boolean {
-    return byte == 0x5C || byte == 0x2E || byte == 0x2B || byte == 0x2A || byte == 0x3F
-        || byte == 0x28 || byte == 0x29 || byte == 0x7C || byte == 0x5B || byte == 0x5D
-        || byte == 0x7B || byte == 0x7D || byte == 0x5E || byte == 0x24 || byte == 0x23
-        || byte == 0x26 || byte == 0x2D || byte == 0x7E || byte == 0x20;
 }

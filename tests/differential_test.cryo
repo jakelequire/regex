@@ -12,43 +12,6 @@ import std::test::error::{ TestError };
 import regex::{ Regex, Captures, Match };
 import RegexTests::DifferentialCases::{ CASES, CASE_COUNT, Case };
 
-/// Our answer in the generator's notation: `none`, or each group's
-/// `start-end` (`-` for a group that did not take part), space-separated.
-private function describe(re: &Regex, haystack: Str) -> String {
-    mut out: String = String::new();
-    match (re.captures(haystack)) {
-        Option::None => { out.push(Str::new("none")); }
-        Option::Some(caps) => {
-            for (mut i: i64 = 0; i < caps.length(); i++) {
-                if (i > 0) { out.push_byte(0x20); }
-                match (caps.get(i)) {
-                    Option::Some(m) => {
-                        out.push(m.start());
-                        out.push_byte(0x2D);
-                        out.push(m.end());
-                    }
-                    Option::None => { out.push_byte(0x2D); }
-                }
-            }
-        }
-    }
-    return out;
-}
-
-/// True when `got` is `expected`, reading a `~` token in `expected` as
-/// any span (see the generator on why such spans go unchecked).
-private function agrees(expected: Str, got: Str) -> boolean {
-    mut wanted = expected.split(&Str::new(" "));
-    mut actual = got.split(&Str::new(" "));
-    loop {
-        const a: Option<Str> = wanted.next();
-        const b: Option<Str> = actual.next();
-        if (a.is_none() || b.is_none()) { return a.is_none() && b.is_none(); }
-        const w: Str = a.unwrap();
-        if (w != Str::new("~") && w != b.unwrap()) { return false; }
-    }
-}
-
 ![test]
 function matches_reference_engine() -> Result<(), TestError> {
     mut failures: i64 = 0;
@@ -64,9 +27,46 @@ function matches_reference_engine() -> Result<(), TestError> {
                     report.push(f"\n  #{i} {pattern:?}: refused: {error.describe()}");
                 }
             }
-            Result::Ok(re) => {
-                const got: String = describe(&re, haystack);
-                if (!agrees(Str::new(case.expected), got.as_str())) {
+            Result::Ok(expression) => {
+                // The answer in the generator's notation: `none`, or each
+                // group's `start-end` (`-` for a group that did not take
+                // part), space-separated.
+                mut got: String = String::new();
+                match (expression.captures(haystack)) {
+                    Option::None => { got.push(Str::new("none")); }
+                    Option::Some(captures) => {
+                        for (mut group: i64 = 0; group < captures.length(); group++) {
+                            if (group > 0) { got.push_byte(0x20); }
+                            match (captures.get(group)) {
+                                Option::Some(span) => {
+                                    got.push(span.start());
+                                    got.push_byte(0x2D);
+                                    got.push(span.end());
+                                }
+                                Option::None => { got.push_byte(0x2D); }
+                            }
+                        }
+                    }
+                }
+                // A `~` in the expected answer is any span (see the
+                // generator on why such spans go unchecked).
+                mut wanted = Str::new(case.expected).split(&Str::new(" "));
+                mut actual = got.as_str().split(&Str::new(" "));
+                mut agrees: boolean = true;
+                loop {
+                    const expected_token: Option<Str> = wanted.next();
+                    const actual_token: Option<Str> = actual.next();
+                    if (expected_token.is_none() || actual_token.is_none()) {
+                        agrees = expected_token.is_none() && actual_token.is_none();
+                        break;
+                    }
+                    const token: Str = expected_token.unwrap();
+                    if (token != Str::new("~") && token != actual_token.unwrap()) {
+                        agrees = false;
+                        break;
+                    }
+                }
+                if (!agrees) {
                     failures = failures + 1;
                     if (failures <= 20) {
                         report.push(f"\n  #{i} {pattern:?} on {haystack:?}: expected {case.expected}, got {got.as_str()}");

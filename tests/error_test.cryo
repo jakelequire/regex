@@ -16,81 +16,82 @@ private type struct Case {
     /// The span the error reports, in bytes of the pattern.
     start: i64;
     end: i64;
-}
 
-private function cases() -> Array<Case> {
-    return [
-        Case { pattern: "(", kind: ErrorKind::GroupUnclosed, start: 0, end: 1 },
-        Case { pattern: "a(b", kind: ErrorKind::GroupUnclosed, start: 1, end: 2 },
-        Case { pattern: ")", kind: ErrorKind::GroupUnopened, start: 0, end: 1 },
-        Case { pattern: "a)b", kind: ErrorKind::GroupUnopened, start: 1, end: 2 },
-        Case { pattern: "[a", kind: ErrorKind::ClassUnclosed, start: 0, end: 1 },
-        Case { pattern: "[]", kind: ErrorKind::ClassUnclosed, start: 0, end: 1 },
-        Case { pattern: "*a", kind: ErrorKind::RepetitionMissing, start: 0, end: 1 },
-        Case { pattern: "a**", kind: ErrorKind::RepetitionMissing, start: 2, end: 3 },
-        Case { pattern: "(?i)*", kind: ErrorKind::RepetitionMissing, start: 4, end: 5 },
-        Case { pattern: "|+", kind: ErrorKind::RepetitionMissing, start: 1, end: 2 },
-        Case { pattern: "a{2}{3}", kind: ErrorKind::RepetitionMissing, start: 4, end: 7 },
-        Case { pattern: "a*+", kind: ErrorKind::UnsupportedAtomic, start: 1, end: 3 },
-        Case { pattern: "(?>a)", kind: ErrorKind::UnsupportedAtomic, start: 0, end: 3 },
-        Case { pattern: "(?=a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 3 },
-        Case { pattern: "(?!a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 3 },
-        Case { pattern: "(?<=a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 4 },
-        Case { pattern: "(?<!a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 4 },
-        Case { pattern: "(a)\\1", kind: ErrorKind::UnsupportedBackreference, start: 3, end: 5 },
-        Case { pattern: "\\k<a>", kind: ErrorKind::UnsupportedBackreference, start: 0, end: 2 },
-        Case { pattern: "\\g1", kind: ErrorKind::UnsupportedBackreference, start: 0, end: 2 },
-        Case { pattern: "(?P=a)", kind: ErrorKind::UnsupportedBackreference, start: 0, end: 4 },
-        Case { pattern: "(?R)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
-        Case { pattern: "(?1)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
-        Case { pattern: "(?|a)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
-        Case { pattern: "(?(1)a)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
-        Case { pattern: "\\K", kind: ErrorKind::UnsupportedEscape, start: 0, end: 2 },
-        Case { pattern: "\\R", kind: ErrorKind::UnsupportedEscape, start: 0, end: 2 },
-        Case { pattern: "\\N{SNOWMAN}", kind: ErrorKind::UnsupportedEscape, start: 0, end: 3 },
-        Case { pattern: "\\y", kind: ErrorKind::EscapeUnrecognized, start: 0, end: 2 },
-        Case { pattern: "a\\", kind: ErrorKind::EscapeUnexpectedEnd, start: 1, end: 2 },
-        Case { pattern: "\\x{110000}", kind: ErrorKind::EscapeHexInvalid, start: 0, end: 10 },
-        Case { pattern: "\\x{D800}", kind: ErrorKind::EscapeHexInvalid, start: 0, end: 8 },
-        Case { pattern: "\\x{}", kind: ErrorKind::EscapeHexEmpty, start: 0, end: 4 },
-        Case { pattern: "\\xZZ", kind: ErrorKind::EscapeHexInvalidDigit, start: 2, end: 3 },
-        Case { pattern: "\\x{12g}", kind: ErrorKind::EscapeHexInvalidDigit, start: 5, end: 6 },
-        Case { pattern: "[z-a]", kind: ErrorKind::ClassRangeInvalid, start: 1, end: 4 },
-        Case { pattern: "[\\d-z]", kind: ErrorKind::ClassRangeLiteral, start: 1, end: 4 },
-        Case { pattern: "[a-\\d]", kind: ErrorKind::ClassRangeLiteral, start: 1, end: 5 },
-        Case { pattern: "[[:alfa:]]", kind: ErrorKind::ClassPosixUnrecognized, start: 1, end: 9 },
-        Case { pattern: "[\\A]", kind: ErrorKind::ClassEscapeInvalid, start: 1, end: 3 },
-        Case { pattern: "[\\B]", kind: ErrorKind::ClassEscapeInvalid, start: 1, end: 3 },
-        Case { pattern: "(?q)", kind: ErrorKind::FlagUnrecognized, start: 2, end: 3 },
-        Case { pattern: "(?ii)", kind: ErrorKind::FlagDuplicate, start: 3, end: 4 },
-        Case { pattern: "(?i-)", kind: ErrorKind::FlagDanglingNegation, start: 3, end: 4 },
-        Case { pattern: "(?-i-m)", kind: ErrorKind::FlagRepeatedNegation, start: 4, end: 5 },
-        Case { pattern: "(?i", kind: ErrorKind::FlagUnexpectedEnd, start: 2, end: 3 },
-        Case { pattern: "(?<a>x)(?<a>y)", kind: ErrorKind::GroupNameDuplicate, start: 10, end: 11 },
-        Case { pattern: "(?<>x)", kind: ErrorKind::GroupNameEmpty, start: 3, end: 4 },
-        Case { pattern: "(?<1a>x)", kind: ErrorKind::GroupNameInvalid, start: 3, end: 4 },
-        Case { pattern: "(?<a-b>x)", kind: ErrorKind::GroupNameInvalid, start: 4, end: 5 },
-        Case { pattern: "(?<abc", kind: ErrorKind::GroupNameUnexpectedEnd, start: 3, end: 6 },
-        Case { pattern: "a{3,2}", kind: ErrorKind::RepetitionCountInvalid, start: 1, end: 6 },
-        Case { pattern: "a{70000}", kind: ErrorKind::RepetitionCountTooLarge, start: 1, end: 8 },
-        Case { pattern: "\\p{Foo}", kind: ErrorKind::UnicodePropertyNotFound, start: 0, end: 7 },
-        Case { pattern: "\\p{Foo=Bar}", kind: ErrorKind::UnicodePropertyNotFound, start: 0, end: 11 },
-        Case { pattern: "\\p{sc=Foo}", kind: ErrorKind::UnicodePropertyValueNotFound, start: 0, end: 10 },
-        Case { pattern: "\\p{", kind: ErrorKind::UnicodeClassInvalid, start: 0, end: 3 },
-        Case { pattern: "\\p{}", kind: ErrorKind::UnicodeClassInvalid, start: 0, end: 4 },
-        Case { pattern: "\\p", kind: ErrorKind::UnicodeClassInvalid, start: 0, end: 2 },
-        Case { pattern: "(?-u)\\p{L}", kind: ErrorKind::UnicodeNotAllowed, start: 5, end: 7 },
-        Case { pattern: "(?-u)[\u{e9}]", kind: ErrorKind::UnicodeNotAllowed, start: 6, end: 8 },
-        Case { pattern: "(?-u)\\xFF", kind: ErrorKind::InvalidUtf8, start: 5, end: 9 },
-        Case { pattern: "(?-u:.)", kind: ErrorKind::InvalidUtf8, start: 5, end: 6 },
-        Case { pattern: "(?-u)[^a]", kind: ErrorKind::InvalidUtf8, start: 5, end: 9 },
-        Case { pattern: "(?-u)\\W", kind: ErrorKind::InvalidUtf8, start: 5, end: 7 },
-    ];
+    /// Every refusal the test checks.
+    static all() -> Array<Case> {
+        return [
+            Case { pattern: "(", kind: ErrorKind::GroupUnclosed, start: 0, end: 1 },
+            Case { pattern: "a(b", kind: ErrorKind::GroupUnclosed, start: 1, end: 2 },
+            Case { pattern: ")", kind: ErrorKind::GroupUnopened, start: 0, end: 1 },
+            Case { pattern: "a)b", kind: ErrorKind::GroupUnopened, start: 1, end: 2 },
+            Case { pattern: "[a", kind: ErrorKind::ClassUnclosed, start: 0, end: 1 },
+            Case { pattern: "[]", kind: ErrorKind::ClassUnclosed, start: 0, end: 1 },
+            Case { pattern: "*a", kind: ErrorKind::RepetitionMissing, start: 0, end: 1 },
+            Case { pattern: "a**", kind: ErrorKind::RepetitionMissing, start: 2, end: 3 },
+            Case { pattern: "(?i)*", kind: ErrorKind::RepetitionMissing, start: 4, end: 5 },
+            Case { pattern: "|+", kind: ErrorKind::RepetitionMissing, start: 1, end: 2 },
+            Case { pattern: "a{2}{3}", kind: ErrorKind::RepetitionMissing, start: 4, end: 7 },
+            Case { pattern: "a*+", kind: ErrorKind::UnsupportedAtomic, start: 1, end: 3 },
+            Case { pattern: "(?>a)", kind: ErrorKind::UnsupportedAtomic, start: 0, end: 3 },
+            Case { pattern: "(?=a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 3 },
+            Case { pattern: "(?!a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 3 },
+            Case { pattern: "(?<=a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 4 },
+            Case { pattern: "(?<!a)", kind: ErrorKind::UnsupportedLookAround, start: 0, end: 4 },
+            Case { pattern: "(a)\\1", kind: ErrorKind::UnsupportedBackreference, start: 3, end: 5 },
+            Case { pattern: "\\k<a>", kind: ErrorKind::UnsupportedBackreference, start: 0, end: 2 },
+            Case { pattern: "\\g1", kind: ErrorKind::UnsupportedBackreference, start: 0, end: 2 },
+            Case { pattern: "(?P=a)", kind: ErrorKind::UnsupportedBackreference, start: 0, end: 4 },
+            Case { pattern: "(?R)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
+            Case { pattern: "(?1)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
+            Case { pattern: "(?|a)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
+            Case { pattern: "(?(1)a)", kind: ErrorKind::UnsupportedGroup, start: 0, end: 3 },
+            Case { pattern: "\\K", kind: ErrorKind::UnsupportedEscape, start: 0, end: 2 },
+            Case { pattern: "\\R", kind: ErrorKind::UnsupportedEscape, start: 0, end: 2 },
+            Case { pattern: "\\N{SNOWMAN}", kind: ErrorKind::UnsupportedEscape, start: 0, end: 3 },
+            Case { pattern: "\\y", kind: ErrorKind::EscapeUnrecognized, start: 0, end: 2 },
+            Case { pattern: "a\\", kind: ErrorKind::EscapeUnexpectedEnd, start: 1, end: 2 },
+            Case { pattern: "\\x{110000}", kind: ErrorKind::EscapeNumericInvalid, start: 0, end: 10 },
+            Case { pattern: "\\x{D800}", kind: ErrorKind::EscapeNumericInvalid, start: 0, end: 8 },
+            Case { pattern: "\\x{}", kind: ErrorKind::EscapeNumericEmpty, start: 0, end: 4 },
+            Case { pattern: "\\xZZ", kind: ErrorKind::EscapeNumericInvalidDigit, start: 2, end: 3 },
+            Case { pattern: "\\x{12g}", kind: ErrorKind::EscapeNumericInvalidDigit, start: 5, end: 6 },
+            Case { pattern: "[z-a]", kind: ErrorKind::ClassRangeInvalid, start: 1, end: 4 },
+            Case { pattern: "[\\d-z]", kind: ErrorKind::ClassRangeLiteral, start: 1, end: 4 },
+            Case { pattern: "[a-\\d]", kind: ErrorKind::ClassRangeLiteral, start: 1, end: 5 },
+            Case { pattern: "[[:alfa:]]", kind: ErrorKind::ClassPosixUnrecognized, start: 1, end: 9 },
+            Case { pattern: "[\\A]", kind: ErrorKind::ClassEscapeInvalid, start: 1, end: 3 },
+            Case { pattern: "[\\B]", kind: ErrorKind::ClassEscapeInvalid, start: 1, end: 3 },
+            Case { pattern: "(?q)", kind: ErrorKind::FlagUnrecognized, start: 2, end: 3 },
+            Case { pattern: "(?ii)", kind: ErrorKind::FlagDuplicate, start: 3, end: 4 },
+            Case { pattern: "(?i-)", kind: ErrorKind::FlagDanglingNegation, start: 3, end: 4 },
+            Case { pattern: "(?-i-m)", kind: ErrorKind::FlagRepeatedNegation, start: 4, end: 5 },
+            Case { pattern: "(?i", kind: ErrorKind::FlagUnexpectedEnd, start: 2, end: 3 },
+            Case { pattern: "(?<a>x)(?<a>y)", kind: ErrorKind::GroupNameDuplicate, start: 10, end: 11 },
+            Case { pattern: "(?<>x)", kind: ErrorKind::GroupNameEmpty, start: 3, end: 4 },
+            Case { pattern: "(?<1a>x)", kind: ErrorKind::GroupNameInvalid, start: 3, end: 4 },
+            Case { pattern: "(?<a-b>x)", kind: ErrorKind::GroupNameInvalid, start: 4, end: 5 },
+            Case { pattern: "(?<abc", kind: ErrorKind::GroupNameUnexpectedEnd, start: 3, end: 6 },
+            Case { pattern: "a{3,2}", kind: ErrorKind::RepetitionCountInvalid, start: 1, end: 6 },
+            Case { pattern: "a{70000}", kind: ErrorKind::RepetitionCountTooLarge, start: 1, end: 8 },
+            Case { pattern: "\\p{Foo}", kind: ErrorKind::UnicodePropertyNotFound, start: 0, end: 7 },
+            Case { pattern: "\\p{Foo=Bar}", kind: ErrorKind::UnicodePropertyNotFound, start: 0, end: 11 },
+            Case { pattern: "\\p{sc=Foo}", kind: ErrorKind::UnicodePropertyValueNotFound, start: 0, end: 10 },
+            Case { pattern: "\\p{", kind: ErrorKind::UnicodeClassInvalid, start: 0, end: 3 },
+            Case { pattern: "\\p{}", kind: ErrorKind::UnicodeClassInvalid, start: 0, end: 4 },
+            Case { pattern: "\\p", kind: ErrorKind::UnicodeClassInvalid, start: 0, end: 2 },
+            Case { pattern: "(?-u)\\p{L}", kind: ErrorKind::UnicodeNotAllowed, start: 5, end: 7 },
+            Case { pattern: "(?-u)[\u{e9}]", kind: ErrorKind::UnicodeNotAllowed, start: 6, end: 8 },
+            Case { pattern: "(?-u)\\xFF", kind: ErrorKind::InvalidUtf8, start: 5, end: 9 },
+            Case { pattern: "(?-u:.)", kind: ErrorKind::InvalidUtf8, start: 5, end: 6 },
+            Case { pattern: "(?-u)[^a]", kind: ErrorKind::InvalidUtf8, start: 5, end: 9 },
+            Case { pattern: "(?-u)\\W", kind: ErrorKind::InvalidUtf8, start: 5, end: 7 },
+        ];
+    }
 }
 
 ![test]
 function every_refusal_has_its_kind_and_span() -> Result<(), TestError> {
-    const all: Array<Case> = cases();
+    const all: Array<Case> = Case::all();
     mut failures: i64 = 0;
     mut report: String = String::new();
     for (case in all) {
@@ -117,23 +118,20 @@ function every_refusal_has_its_kind_and_span() -> Result<(), TestError> {
     return Result::Ok(());
 }
 
-/// `depth` copies of `open`, then `middle`, then `depth` copies of `close`.
-private function nested(depth: i64, open: u8, middle: u8, close: u8) -> String {
-    mut text: String = String::new();
-    for (mut i: i64 = 0; i < depth; i++) { text.push_byte(open); }
-    text.push_byte(middle);
-    for (mut i: i64 = 0; i < depth; i++) { text.push_byte(close); }
-    return text;
-}
-
 ![test]
 function nesting_past_the_limit_is_refused() -> Result<(), TestError> {
-    const groups: String = nested(300, 0x28, 0x61, 0x29);
+    mut groups: String = String::new();
+    groups.push_repeated('(', 300);
+    groups.push_byte(0x61);
+    groups.push_repeated(')', 300);
     match (Regex::new(groups.as_str())) {
         Result::Ok(_) => { return bail(Str::new("300 nested groups compiled under the default limit of 250")); }
         Result::Err(error) => { expect(error.kind() == ErrorKind::NestLimitExceeded, "nest limit kind for groups")?; }
     }
-    const classes: String = nested(300, 0x5B, 0x61, 0x5D);
+    mut classes: String = String::new();
+    classes.push_repeated('[', 300);
+    classes.push_byte(0x61);
+    classes.push_repeated(']', 300);
     match (Regex::new(classes.as_str())) {
         Result::Ok(_) => { return bail(Str::new("300 nested classes compiled under the default limit of 250")); }
         Result::Err(error) => { return expect(error.kind() == ErrorKind::NestLimitExceeded, "nest limit kind for classes"); }
@@ -144,17 +142,22 @@ function nesting_past_the_limit_is_refused() -> Result<(), TestError> {
 function deep_nesting_never_exhausts_the_stack() -> Result<(), TestError> {
     // Parsing and compiling keep their own stacks, so a limit raised far
     // past the default is safe: these would overflow a recursive parser.
-    const groups: String = nested(5000, 0x28, 0x61, 0x29);
+    mut groups: String = String::new();
+    groups.push_repeated('(', 5000);
+    groups.push_byte(0x61);
+    groups.push_repeated(')', 5000);
     const deep_groups: Regex = RegexBuilder::new(groups.as_str()).nest_limit(10000).build().unwrap();
     expect(deep_groups.is_match(Str::new("a")), "5000 nested groups match")?;
     expect_equal(deep_groups.captures_length(), 5001 as i64)?;
-    const classes: String = nested(5000, 0x5B, 0x61, 0x5D);
+    mut classes: String = String::new();
+    classes.push_repeated('[', 5000);
+    classes.push_byte(0x61);
+    classes.push_repeated(']', 5000);
     const deep_classes: Regex = RegexBuilder::new(classes.as_str()).nest_limit(10000).build().unwrap();
     expect(deep_classes.is_match(Str::new("a")), "5000 nested classes match")?;
-    mut starred: String = String::new();
-    for (mut i: i64 = 0; i < 5000; i++) { starred.push(Str::new("(?:")); }
+    mut starred: String = Str::new("(?:").repeat(5000);
     starred.push_byte(0x61);
-    for (mut i: i64 = 0; i < 5000; i++) { starred.push(Str::new(")*")); }
+    starred.push(Str::new(")*").repeat(5000).as_str());
     const deep_stars: Regex = RegexBuilder::new(starred.as_str()).nest_limit(10000).build().unwrap();
     return expect_equal(deep_stars.find(Str::new("aaa")).unwrap().end(), 3 as i64);
 }

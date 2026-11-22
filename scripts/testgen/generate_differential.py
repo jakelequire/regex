@@ -9,8 +9,8 @@ generator only draws from constructs on which the two engines agree:
 ASCII haystacks (so Unicode tables play no part), no `$` (which `re`
 also lets match before a final newline), no iteration (`re` lets an
 empty match follow a non-empty one directly; this library does not), and
-no `\\B` against an empty haystack (`re` refuses to match it there; the
-Perl family matches it).
+no `\\B` against an empty haystack (`re` refuses to match it there; this
+library matches it).
 
 One difference is kept and marked rather than avoided: when the last pass
 through a repetition matches empty, `re` reports that empty pass as the

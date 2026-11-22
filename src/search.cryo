@@ -1,0 +1,335 @@
+///! search: the Pike VM, which simulates the `Automaton` over the haystack
+///! with all threads in lock step.
+///!
+///! Every state is visited at most once per haystack position, so a search
+///! takes time proportional to the haystack's length times the
+///! automaton's size, whatever the pattern - the guarantee the library is
+///! built on. Threads are kept in priority order, and a match cuts every
+///! thread of lower priority, which gives leftmost-first semantics: the
+///! match a backtracking engine would report.
+///!
+///! The epsilon closure walks an explicit stack, so a deeply nested pattern
+///! cannot exhaust the call stack.
+
+namespace regex::search;
+
+import std::core::option::{ Option };
+import std::collections::array::{ Array };
+import std::core::mem;
+import regex::automaton::{ Automaton, State, Transition };
+import regex::syntax::tree::{ Assertion };
+import regex::prefilter::{ Prefilter };
+import regex::unicode::{ UnicodeProperties };
+import regex::utf8::{ Utf8 };
+
+/// A slot no capture has written.
+internal const NO_POSITION: i64 = -1;
+
+/// A set of state ids with insertion order, cleared in constant time.
+private type struct SparseSet {
+    dense: Array<u32>;
+    sparse: Array<u32>;
+    length: i64;
+
+    static new(capacity: i64) -> SparseSet {
+        mut set: SparseSet = SparseSet { dense: Array::new(), sparse: Array::new(), length: 0 };
+        set.dense.resize(capacity, 0);
+        set.sparse.resize(capacity, 0);
+        return set;
+    }
+
+    ![inline]
+    contains(&this, id: u32) -> boolean {
+        const index: u32 = this.sparse[id];
+        return (index as i64) < this.length && this.dense[index] == id;
+    }
+
+    /// Add `id`; false when it was already present.
+    ![inline]
+    insert(mut &this, id: u32) -> boolean {
+        if (this.contains(id)) { return false; }
+        this.dense[this.length] = id;
+        this.sparse[id] = this.length as u32;
+        this.length = this.length + 1;
+        return true;
+    }
+
+    clear(mut &this) -> void {
+        this.length = 0;
+    }
+}
+
+/// The threads at one position: their states, and each state's slots.
+private type struct Threads {
+    set: SparseSet;
+    slots: Array<i64>;
+    slots_per_state: i64;
+
+    static new(state_count: i64, slots_per_state: i64) -> Threads {
+        mut threads: Threads = Threads {
+            set: SparseSet::new(state_count),
+            slots: Array::new(),
+            slots_per_state: slots_per_state,
+        };
+        threads.slots.resize(state_count * slots_per_state, NO_POSITION);
+        return threads;
+    }
+}
+
+/// One step of the epsilon closure's walk.
+private type enum Frame {
+    /// Visit a state and what it leads to without reading.
+    Explore(u32);
+    /// Put a slot back as it was before a capture on another path wrote it.
+    RestoreCapture(u32, i64);
+}
+
+/// Scratch memory for searches with one automaton and one slot count.
+/// Reusing a cache across searches avoids allocating per search.
+internal type struct Cache {
+    private current: Threads;
+    private next: Threads;
+    private stack: Array<Frame>;
+    private scratch: Array<i64>;
+    private slot_count: i64;
+
+    internal static new(automaton: &Automaton, slot_count: i64) -> Cache {
+        const states: i64 = automaton.state_count();
+        mut cache: Cache = Cache {
+            current: Threads::new(states, slot_count),
+            next: Threads::new(states, slot_count),
+            stack: Array::new(),
+            scratch: Array::new(),
+            slot_count: slot_count,
+        };
+        cache.scratch.resize(slot_count, NO_POSITION);
+        return cache;
+    }
+
+    /// Search `input` with `automaton`. On a match, answers true and fills
+    /// `slots` (as many as the cache was made for) with the match's capture
+    /// positions.
+    ///
+    /// With no thread under way, `prefilter` moves the search straight to
+    /// the next position where a match can start.
+    internal search(mut &this, automaton: &Automaton, prefilter: &Prefilter, input: &Input, slots: mut &Array<i64>) -> boolean {
+        this.current.set.clear();
+        this.next.set.clear();
+        for (mut i: i64 = 0; i < slots.length(); i++) { slots[i] = NO_POSITION; }
+        mut matched: boolean = false;
+        mut at: i64 = input.start;
+        loop {
+            if (this.current.set.length == 0 && (matched || (input.anchored && at > input.start))) {
+                break;
+            }
+            if (this.current.set.length == 0 && !matched && !input.anchored && prefilter.is_active()) {
+                at = prefilter.next_candidate(input.bytes, at, input.end);
+                // The prefilter is only active for patterns that cannot match
+                // the empty string, so no candidate means no match.
+                if (at >= input.end) { break; }
+            }
+            // A new thread may start here, below every thread already running.
+            if (!matched && (!input.anchored || at == input.start)) {
+                for (mut i: i64 = 0; i < this.slot_count; i++) { this.scratch[i] = NO_POSITION; }
+                this.epsilon_closure(automaton, input, at, automaton.start, true);
+            }
+            if (this.step(automaton, input, at, slots)) {
+                matched = true;
+                if (input.earliest) { return true; }
+            }
+            if (at >= input.end) { break; }
+            at = at + 1;
+            mem::swap(&this.current, &this.next);
+            this.next.set.clear();
+        }
+        return matched;
+    }
+
+    /// Advance every thread at `at` over the byte there into `next`.
+    /// Answers true when a thread matched at `at`; its slots are in `slots`,
+    /// and every thread of lower priority has been dropped.
+    private step(mut &this, automaton: &Automaton, input: &Input, at: i64, slots: mut &Array<i64>) -> boolean {
+        mut matched: boolean = false;
+        const per_state: i64 = this.slot_count;
+        const has_byte: boolean = at < input.end;
+        const byte: u8 = if (has_byte) { input.bytes[at] } else { 0 };
+        for (mut index: i64 = 0; index < this.current.set.length; index++) {
+            const id: u32 = this.current.set.dense[index];
+            mut next: u32 = 0;
+            mut advances: boolean = false;
+            match (automaton.state(id)) {
+                State::ByteRange(low, high, target) => {
+                    if (has_byte && byte >= low && byte <= high) {
+                        next = target;
+                        advances = true;
+                    }
+                }
+                State::Sparse(first, count) => {
+                    if (has_byte) {
+                        for (mut i: u32 = 0; i < count; i++) {
+                            const transition: Transition = automaton.transition(first + i);
+                            if (byte < transition.low) { break; }
+                            if (byte <= transition.high) {
+                                next = transition.next;
+                                advances = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                State::Match => {
+                    // A text regex matches only between whole scalars.
+                    if (automaton.utf8_only && !Utf8::is_boundary(input.bytes, input.length, at)) {
+                        continue;
+                    }
+                    const base: i64 = (id as i64) * per_state;
+                    for (mut i: i64 = 0; i < slots.length() && i < per_state; i++) {
+                        slots[i] = this.current.slots[base + i];
+                    }
+                    matched = true;
+                    if (input.earliest) { return true; }
+                    // Every remaining thread has lower priority.
+                    break;
+                }
+                _ => { }
+            }
+            if (advances) {
+                const base: i64 = (id as i64) * per_state;
+                for (mut i: i64 = 0; i < per_state; i++) {
+                    this.scratch[i] = this.current.slots[base + i];
+                }
+                this.epsilon_closure(automaton, input, at + 1, next, false);
+            }
+        }
+        return matched;
+    }
+
+    /// Add `start` and everything reachable from it without reading a byte,
+    /// at position `at`, to `current` (when `into_current`) or `next`, with
+    /// the slots in `scratch` as the thread's.
+    private epsilon_closure(mut &this, automaton: &Automaton, input: &Input, at: i64, start: u32, into_current: boolean) -> void {
+        this.stack.push(Frame::Explore(start));
+        const per_state: i64 = this.slot_count;
+        while (this.stack.length() > 0) {
+            match (this.stack.pop().unwrap()) {
+                Frame::RestoreCapture(slot, value) => {
+                    this.scratch[slot] = value;
+                }
+                Frame::Explore(first) => {
+                    mut id: u32 = first;
+                    loop {
+                        const inserted: boolean = if (into_current) { this.current.set.insert(id) } else { this.next.set.insert(id) };
+                        if (!inserted) { break; }
+                        const base: i64 = (id as i64) * per_state;
+                        for (mut i: i64 = 0; i < per_state; i++) {
+                            if (into_current) {
+                                this.current.slots[base + i] = this.scratch[i];
+                            } else {
+                                this.next.slots[base + i] = this.scratch[i];
+                            }
+                        }
+                        mut proceed: boolean = false;
+                        match (automaton.state(id)) {
+                            State::Empty(next) => {
+                                id = next;
+                                proceed = true;
+                            }
+                            State::Assertion(assertion, next) => {
+                                if (input.holds(assertion, at)) {
+                                    id = next;
+                                    proceed = true;
+                                }
+                            }
+                            State::BinaryUnion(preferred, other) => {
+                                this.stack.push(Frame::Explore(other));
+                                id = preferred;
+                                proceed = true;
+                            }
+                            State::Union(alternates, count) => {
+                                // Later alternatives wait on the stack in reverse,
+                                // so they are explored in priority order.
+                                mut i: u32 = count;
+                                while (i > 1) {
+                                    i = i - 1;
+                                    this.stack.push(Frame::Explore(automaton.alternate(alternates + i)));
+                                }
+                                id = automaton.alternate(alternates);
+                                proceed = true;
+                            }
+                            State::Capture(slot, next) => {
+                                if ((slot as i64) < per_state) {
+                                    this.stack.push(Frame::RestoreCapture(slot, this.scratch[slot]));
+                                    this.scratch[slot] = at;
+                                }
+                                id = next;
+                                proceed = true;
+                            }
+                            _ => { }
+                        }
+                        if (!proceed) { break; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A search of `bytes[start, end)` within the haystack `[bytes, bytes +
+/// length)`; assertions see the whole haystack.
+internal type struct Input {
+    bytes: u8*;
+    length: i64;
+    start: i64;
+    end: i64;
+    /// Only a match beginning exactly at `start` counts.
+    anchored: boolean;
+    /// Stop at the first match found, whatever its length (for `is_match`).
+    earliest: boolean;
+
+    /// Whether `assertion` holds at position `at` of the haystack.
+    internal holds(&this, assertion: Assertion, at: i64) -> boolean {
+        const bytes: u8* = this.bytes;
+        const length: i64 = this.length;
+        match (assertion) {
+            Assertion::Start => { return at == 0; }
+            Assertion::End => { return at == length; }
+            Assertion::EndBeforeFinalNewline => {
+                return at == length || (at == length - 1 && bytes[at] == 0x0A);
+            }
+            Assertion::StartLine => { return at == 0 || bytes[at - 1] == 0x0A; }
+            Assertion::EndLine => { return at == length || bytes[at] == 0x0A; }
+            Assertion::WordBoundaryAscii => { return this.is_word_before(at, false) != this.is_word_at(at, false); }
+            Assertion::NotWordBoundaryAscii => { return this.is_word_before(at, false) == this.is_word_at(at, false); }
+            Assertion::WordBoundaryUnicode => { return this.is_word_before(at, true) != this.is_word_at(at, true); }
+            Assertion::NotWordBoundaryUnicode => { return this.is_word_before(at, true) == this.is_word_at(at, true); }
+        }
+    }
+
+    /// True when a word character ends just before `at`: an ASCII one
+    /// (`[0-9A-Za-z_]`), or with `unicode` a scalar `\w` matches.
+    private is_word_before(&this, at: i64, unicode: boolean) -> boolean {
+        if (!unicode) {
+            if (at <= 0) { return false; }
+            const byte: u8 = this.bytes[at - 1];
+            return (byte as char).is_alphanumeric() || byte == 0x5F;
+        }
+        return match (Utf8::decode_before(this.bytes, this.length, at)) {
+            Option::Some(scalar) => { UnicodeProperties::is_word_scalar(scalar) }
+            Option::None => { false }
+        };
+    }
+
+    /// True when a word character starts at `at`, read as `is_word_before`
+    /// reads one.
+    private is_word_at(&this, at: i64, unicode: boolean) -> boolean {
+        if (!unicode) {
+            if (at >= this.length) { return false; }
+            const byte: u8 = this.bytes[at];
+            return (byte as char).is_alphanumeric() || byte == 0x5F;
+        }
+        return match (Utf8::decode_at(this.bytes, this.length, at)) {
+            Option::Some(scalar) => { UnicodeProperties::is_word_scalar(scalar) }
+            Option::None => { false }
+        };
+    }
+}
