@@ -35,7 +35,7 @@ internal function normalize_name(name: Str) -> String {
     }
     const folded: Str = out.as_str();
     if (folded.length() > 2 && folded.starts_with(&Str::new("is"))) {
-        return String::from_str(folded.sub_bytes(2, folded.length()));
+        return String::from_str(folded.byte_substring(2, folded.length()));
     }
     return out;
 }
@@ -59,7 +59,7 @@ private function find_name(index: NameIndex, normalized: Str) -> Option<i64> {
 
 /// The table a `\p{...}` body names. `body` is the text between the
 /// braces (or the single letter of `\pL`).
-internal function property_table(body: Str) -> Result<Slice<u32>, ErrorKind> {
+internal function property_table(body: Str) -> Result<&Slice<u32>, ErrorKind> {
     mut separator: i64 = -1;
     for (mut i: i64 = 0; i < body.length(); i++) {
         const byte: u8 = body.byte_at(i).unwrap();
@@ -72,8 +72,8 @@ internal function property_table(body: Str) -> Result<Slice<u32>, ErrorKind> {
         const name: String = normalize_name(body);
         return bare_property(name.as_str());
     }
-    const property: String = normalize_name(body.sub_bytes(0, separator));
-    const value: String = normalize_name(body.sub_bytes(separator + 1, body.length()));
+    const property: String = normalize_name(body.byte_substring(0, separator));
+    const value: String = normalize_name(body.byte_substring(separator + 1, body.length()));
     const key: Str = property.as_str();
     if (key == Str::new("gc") || key == Str::new("generalcategory")) {
         return match (find_name(NameIndex::GeneralCategory, value.as_str())) {
@@ -96,7 +96,7 @@ internal function property_table(body: Str) -> Result<Slice<u32>, ErrorKind> {
     return Result::Err(ErrorKind::UnicodePropertyNotFound);
 }
 
-private function bare_property(name: Str) -> Result<Slice<u32>, ErrorKind> {
+private function bare_property(name: Str) -> Result<&Slice<u32>, ErrorKind> {
     match (find_name(NameIndex::GeneralCategory, name)) {
         Option::Some(table) => { return Result::Ok(tables::table(table)); }
         Option::None => { }
@@ -113,18 +113,18 @@ private function bare_property(name: Str) -> Result<Slice<u32>, ErrorKind> {
 }
 
 /// `\d` in Unicode mode: General_Category Decimal_Number.
-internal function perl_digit() -> Slice<u32> {
+internal function perl_digit() -> &Slice<u32> {
     return tables::table(tables::PERL_DIGIT);
 }
 
 /// `\s` in Unicode mode: White_Space.
-internal function perl_space() -> Slice<u32> {
+internal function perl_space() -> &Slice<u32> {
     return tables::table(tables::PERL_SPACE);
 }
 
 /// `\w` in Unicode mode: Alphabetic, marks, decimal numbers, connector
 /// punctuation and Join_Control, as UTS #18 defines a word character.
-internal function perl_word() -> Slice<u32> {
+internal function perl_word() -> &Slice<u32> {
     return tables::table(tables::PERL_WORD);
 }
 
@@ -135,7 +135,7 @@ internal function is_word_scalar(scalar: u32) -> boolean {
         const byte: u8 = scalar as u8;
         return byte.is_alpha() || byte.is_digit() || byte == 0x5F;
     }
-    const pairs: Slice<u32> = perl_word();
+    const pairs: &Slice<u32> = perl_word();
     mut low: i64 = 0;
     mut high: i64 = pairs.length() / 2;
     while (low < high) {
@@ -152,11 +152,11 @@ internal function is_word_scalar(scalar: u32) -> boolean {
 }
 
 /// The scalars with simple case folding equivalents, sorted.
-internal function fold_keys() -> Slice<u32> {
+internal function fold_keys() -> &Slice<u32> {
     return tables::fold_keys();
 }
 
 /// The scalars that fold together with `fold_keys()[position]`.
-internal function fold_equivalents(position: i64) -> Slice<u32> {
+internal function fold_equivalents(position: i64) -> &Slice<u32> {
     return tables::fold_equivalents(position);
 }

@@ -235,7 +235,7 @@ internal function new_slots(count: i64) -> Array<i64> {
 /// not participate expands to nothing; a `$` that starts no reference is
 /// itself.
 internal function expand(template: Str, haystack: u8*, slots: &Array<i64>, groups: &GroupInfo, out: mut &Array<u8>) -> void {
-    const text: u8* = template.as_ptr();
+    const text: u8* = template.as_pointer();
     const length: i64 = template.length();
     mut i: i64 = 0;
     while (i < length) {

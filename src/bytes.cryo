@@ -21,7 +21,7 @@ import std::collections::array::{ Array };
 import std::collections::str::{ Str };
 import std::collections::string::{ String };
 import std::fmt::display::{ Display, Debug, Formatter };
-import std::fmt::error::{ FmtError };
+import std::fmt::error::{ FormatError };
 import regex::error::{ Error };
 import regex::engine::{ Engine, Config, Cursor };
 import regex::engine;
@@ -49,26 +49,26 @@ public type struct Regex {
 
     /// True when the pattern matches somewhere in `haystack`; stops at the
     /// first match it sees.
-    public is_match(&this, haystack: Slice<u8>) -> boolean {
-        return this.engine.is_match(haystack.as_const_ptr(), haystack.length(), 0);
+    public is_match(&this, haystack: &Slice<u8>) -> boolean {
+        return this.engine.is_match(haystack.as_pointer(), haystack.length(), 0);
     }
 
     /// True when the pattern matches at or after byte `start`. Assertions
     /// see the whole haystack: `^` does not match at `start` unless it is 0.
-    public is_match_at(&this, haystack: Slice<u8>, start: i64) -> boolean {
-        return this.engine.is_match(haystack.as_const_ptr(), haystack.length(), start);
+    public is_match_at(&this, haystack: &Slice<u8>, start: i64) -> boolean {
+        return this.engine.is_match(haystack.as_pointer(), haystack.length(), start);
     }
 
     /// The leftmost match: the first position where the pattern matches,
     /// and the match there a backtracking engine would choose.
-    public find(&this, haystack: Slice<u8>) -> Option<Match> {
+    public find(&this, haystack: &Slice<u8>) -> Option<Match> {
         return this.find_at(haystack, 0);
     }
 
     /// The leftmost match at or after byte `start`.
-    public find_at(&this, haystack: Slice<u8>, start: i64) -> Option<Match> {
+    public find_at(&this, haystack: &Slice<u8>, start: i64) -> Option<Match> {
         mut slots: Array<i64> = engine::new_slots(2);
-        if (!this.engine.find_at(haystack.as_const_ptr(), haystack.length(), start, &slots)) {
+        if (!this.engine.find_at(haystack.as_pointer(), haystack.length(), start, &slots)) {
             return Option::None;
         }
         return Option::Some(Match { haystack: haystack, start_offset: slots[0], end_offset: slots[1] });
@@ -76,61 +76,61 @@ public type struct Regex {
 
     /// Every successive non-overlapping match, left to right. An empty
     /// match directly after the previous match is skipped.
-    public find_iter(&this, haystack: Slice<u8>) -> Matches {
+    public find_iter(&this, haystack: &Slice<u8>) -> Matches {
         return Matches { regex: &this, haystack: haystack, cursor: Cursor::start_at(0) };
     }
 
     /// The leftmost match with the span of every capture group.
-    public captures(&this, haystack: Slice<u8>) -> Option<Captures> {
+    public captures(&this, haystack: &Slice<u8>) -> Option<Captures> {
         return this.captures_at(haystack, 0);
     }
 
     /// `captures`, for a match at or after byte `start`.
-    public captures_at(&this, haystack: Slice<u8>, start: i64) -> Option<Captures> {
+    public captures_at(&this, haystack: &Slice<u8>, start: i64) -> Option<Captures> {
         mut slots: Array<i64> = engine::new_slots(this.engine.slot_count());
-        if (!this.engine.find_at(haystack.as_const_ptr(), haystack.length(), start, &slots)) {
+        if (!this.engine.find_at(haystack.as_pointer(), haystack.length(), start, &slots)) {
             return Option::None;
         }
         return Option::Some(Captures { haystack: haystack, slots: slots, groups: this.engine.groups() });
     }
 
     /// The captures of every successive non-overlapping match.
-    public captures_iter(&this, haystack: Slice<u8>) -> CaptureMatches {
+    public captures_iter(&this, haystack: &Slice<u8>) -> CaptureMatches {
         return CaptureMatches { regex: &this, haystack: haystack, cursor: Cursor::start_at(0) };
     }
 
     /// The bytes between successive matches. A haystack with no match is
     /// one piece; matches at the edges give empty pieces there.
-    public split(&this, haystack: Slice<u8>) -> Split {
+    public split(&this, haystack: &Slice<u8>) -> Split {
         return Split { regex: &this, haystack: haystack, cursor: Cursor::start_at(0), last: 0, remaining: -1, done: false };
     }
 
     /// `split`, ending after at most `limit` pieces: the last holds the
     /// rest. A limit of 0 yields nothing.
-    public splitn(&this, haystack: Slice<u8>, limit: i64) -> Split {
+    public splitn(&this, haystack: &Slice<u8>, limit: i64) -> Split {
         return Split { regex: &this, haystack: haystack, cursor: Cursor::start_at(0), last: 0, remaining: limit, done: limit <= 0 };
     }
 
     /// `haystack` with its leftmost match replaced by `replacement`,
     /// expanded as `Captures.expand` describes.
-    public replace(&this, haystack: Slice<u8>, replacement: Str) -> Array<u8> {
+    public replace(&this, haystack: &Slice<u8>, replacement: Str) -> Array<u8> {
         return this.replacen(haystack, 1, replacement);
     }
 
     /// `haystack` with every match replaced.
-    public replace_all(&this, haystack: Slice<u8>, replacement: Str) -> Array<u8> {
+    public replace_all(&this, haystack: &Slice<u8>, replacement: Str) -> Array<u8> {
         return this.replacen(haystack, -1, replacement);
     }
 
     /// `haystack` with its first `limit` matches replaced; a negative
     /// limit replaces them all.
-    public replacen(&this, haystack: Slice<u8>, limit: i64, replacement: Str) -> Array<u8> {
+    public replacen(&this, haystack: &Slice<u8>, limit: i64, replacement: Str) -> Array<u8> {
         mut out: Array<u8> = Array::with_capacity(haystack.length());
         mut cursor: Cursor = Cursor::start_at(0);
         mut slots: Array<i64> = engine::new_slots(this.engine.slot_count());
         mut copied: i64 = 0;
         mut replaced: i64 = 0;
-        const bytes: u8* = haystack.as_const_ptr();
+        const bytes: u8* = haystack.as_pointer();
         while (limit < 0 || replaced < limit) {
             if (!this.engine.next_match(bytes, haystack.length(), &cursor, &slots)) { break; }
             out.append(haystack.subslice(copied, slots[0]));
@@ -159,13 +159,13 @@ public type struct Regex {
 }
 
 implement trait Display for struct Regex {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         return f.write_str(this.engine.pattern());
     }
 }
 
 implement trait Debug for struct Regex {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         f.write_str(Str::new("Regex("))?;
         f.write_str(this.engine.pattern())?;
         return f.write_str(Str::new(")"));
@@ -230,7 +230,7 @@ public type struct RegexBuilder {
 
 /// One match: a span of the haystack.
 public type struct Match {
-    private haystack: Slice<u8>;
+    private haystack: &Slice<u8>;
     private start_offset: i64;
     private end_offset: i64;
 
@@ -243,13 +243,13 @@ public type struct Match {
     public is_empty(&this) -> boolean { return this.start_offset == this.end_offset; }
 
     /// The matched bytes.
-    public as_bytes(&this) -> Slice<u8> {
+    public as_bytes(&this) -> &Slice<u8> {
         return this.haystack.subslice(this.start_offset, this.end_offset);
     }
 }
 
 implement trait Debug for struct Match {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         return f.write(f"Match({this.start_offset}..{this.end_offset})");
     }
 }
@@ -257,7 +257,7 @@ implement trait Debug for struct Match {
 /// The groups of one match. Group 0 is the whole match; a group that did
 /// not take part in the match has no span.
 public type struct Captures {
-    private haystack: Slice<u8>;
+    private haystack: &Slice<u8>;
     private slots: Array<i64>;
     private groups: &GroupInfo;
 
@@ -294,21 +294,21 @@ public type struct Captures {
     /// digit takes only digits (`$1a` is group 1, then `a`); a group that
     /// does not exist or did not take part expands to nothing.
     public expand(&this, template: Str, out: mut &Array<u8>) -> void {
-        engine::expand(template, this.haystack.as_const_ptr(), &this.slots, this.groups, out);
+        engine::expand(template, this.haystack.as_pointer(), &this.slots, this.groups, out);
     }
 }
 
 /// Successive non-overlapping matches; see `Regex.find_iter`.
 public type struct Matches {
     private regex: &Regex;
-    private haystack: Slice<u8>;
+    private haystack: &Slice<u8>;
     private cursor: Cursor;
 }
 
 implement trait Iterator<Match> for struct Matches {
     next(mut &this) -> Option<Match> {
         mut slots: Array<i64> = engine::new_slots(2);
-        if (!this.regex.engine.next_match(this.haystack.as_const_ptr(), this.haystack.length(), &this.cursor, &slots)) {
+        if (!this.regex.engine.next_match(this.haystack.as_pointer(), this.haystack.length(), &this.cursor, &slots)) {
             return Option::None;
         }
         return Option::Some(Match { haystack: this.haystack, start_offset: slots[0], end_offset: slots[1] });
@@ -318,14 +318,14 @@ implement trait Iterator<Match> for struct Matches {
 /// The captures of successive non-overlapping matches.
 public type struct CaptureMatches {
     private regex: &Regex;
-    private haystack: Slice<u8>;
+    private haystack: &Slice<u8>;
     private cursor: Cursor;
 }
 
 implement trait Iterator<Captures> for struct CaptureMatches {
     next(mut &this) -> Option<Captures> {
         mut slots: Array<i64> = engine::new_slots(this.regex.engine.slot_count());
-        if (!this.regex.engine.next_match(this.haystack.as_const_ptr(), this.haystack.length(), &this.cursor, &slots)) {
+        if (!this.regex.engine.next_match(this.haystack.as_pointer(), this.haystack.length(), &this.cursor, &slots)) {
             return Option::None;
         }
         return Option::Some(Captures { haystack: this.haystack, slots: slots, groups: this.regex.engine.groups() });
@@ -335,7 +335,7 @@ implement trait Iterator<Captures> for struct CaptureMatches {
 /// The bytes between matches; see `Regex.split` and `Regex.splitn`.
 public type struct Split {
     private regex: &Regex;
-    private haystack: Slice<u8>;
+    private haystack: &Slice<u8>;
     private cursor: Cursor;
     /// Where the next piece starts.
     private last: i64;
@@ -344,8 +344,8 @@ public type struct Split {
     private done: boolean;
 }
 
-implement trait Iterator<Slice<u8>> for struct Split {
-    next(mut &this) -> Option<Slice<u8>> {
+implement trait Iterator<&Slice<u8>> for struct Split {
+    next(mut &this) -> Option<&Slice<u8>> {
         if (this.done) { return Option::None; }
         const length: i64 = this.haystack.length();
         if (this.remaining == 1) {
@@ -353,11 +353,11 @@ implement trait Iterator<Slice<u8>> for struct Split {
             return Option::Some(this.haystack.subslice(this.last, length));
         }
         mut slots: Array<i64> = engine::new_slots(2);
-        if (!this.regex.engine.next_match(this.haystack.as_const_ptr(), length, &this.cursor, &slots)) {
+        if (!this.regex.engine.next_match(this.haystack.as_pointer(), length, &this.cursor, &slots)) {
             this.done = true;
             return Option::Some(this.haystack.subslice(this.last, length));
         }
-        const piece: Slice<u8> = this.haystack.subslice(this.last, slots[0]);
+        const piece: &Slice<u8> = this.haystack.subslice(this.last, slots[0]);
         this.last = slots[1];
         if (this.remaining > 0) { this.remaining = this.remaining - 1; }
         return Option::Some(piece);

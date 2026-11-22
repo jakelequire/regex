@@ -28,11 +28,6 @@ internal const MAX_BYTE: u32 = 0xFF;
 internal const SURROGATE_START: u32 = 0xD800;
 internal const SURROGATE_END: u32 = 0xDFFF;
 
-private function interval_less(a: &Interval, b: &Interval) -> boolean {
-    if (a.start != b.start) { return a.start < b.start; }
-    return a.end < b.end;
-}
-
 internal type struct ClassRanges {
     private intervals: Array<Interval>;
 
@@ -49,9 +44,8 @@ internal type struct ClassRanges {
 
     /// The set described by a generated table of start/end pairs, which
     /// is canonical already.
-    internal static from_table(pairs: Slice<u32>) -> ClassRanges {
-        mut set: ClassRanges = ClassRanges::new();
-        set.intervals.reserve(pairs.length() / 2);
+    internal static from_table(pairs: &Slice<u32>) -> ClassRanges {
+        mut set: ClassRanges = ClassRanges { intervals: Array::with_capacity(pairs.length() / 2) };
         mut i: i64 = 0;
         while (i + 1 < pairs.length()) {
             set.intervals.push(Interval { start: pairs[i], end: pairs[i + 1] });
@@ -79,7 +73,7 @@ internal type struct ClassRanges {
     }
 
     /// The intervals, in order.
-    internal as_slice(&this) -> Slice<Interval> {
+    internal as_slice(&this) -> &Slice<Interval> {
         return this.intervals.as_slice();
     }
 
@@ -126,7 +120,10 @@ internal type struct ClassRanges {
     /// Sort the ranges and merge any that overlap or touch.
     internal canonicalize(mut &this) -> void {
         if (this.intervals.length() <= 1) { return; }
-        this.intervals.sort_by(interval_less);
+        this.intervals.sort_by((a: &Interval, b: &Interval) -> Ordering {
+            if (a.start != b.start) { return a.start.compare(&b.start); }
+            return a.end.compare(&b.end);
+        });
         mut write: i64 = 0;
         mut read: i64 = 1;
         const count: i64 = this.intervals.length();
@@ -241,13 +238,13 @@ internal type struct ClassRanges {
     /// Add, for every scalar in the set, each scalar that simple case
     /// folding makes equivalent to it.
     internal fold_unicode(mut &this) -> void {
-        const keys: Slice<u32> = unicode::fold_keys();
+        const keys: &Slice<u32> = unicode::fold_keys();
         const original: i64 = this.intervals.length();
         for (mut i: i64 = 0; i < original; i++) {
             const interval: Interval = this.intervals[i];
             mut position: i64 = lower_bound(keys, interval.start);
             while (position < keys.length() && keys[position] <= interval.end) {
-                const equivalents: Slice<u32> = unicode::fold_equivalents(position);
+                const equivalents: &Slice<u32> = unicode::fold_equivalents(position);
                 for (value in equivalents) {
                     this.intervals.push(Interval { start: value, end: value });
                 }
@@ -289,7 +286,7 @@ internal type struct ClassRanges {
 }
 
 /// The first position in the sorted `values` holding a value `>= target`.
-internal function lower_bound(values: Slice<u32>, target: u32) -> i64 {
+internal function lower_bound(values: &Slice<u32>, target: u32) -> i64 {
     mut low: i64 = 0;
     mut high: i64 = values.length();
     while (low < high) {

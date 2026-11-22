@@ -4697,7 +4697,7 @@ private const FOLD_VALUES: [u32; 3090] = [
 ];
 
 /// The ranges of table `id`, flattened as start/end pairs.
-internal function table(id: i64) -> Slice<u32> {
+internal function table(id: i64) -> &Slice<u32> {
     const start: i64 = TABLE_STARTS[id] as i64;
     return Slice::from_raw(&RANGES[start * 2], TABLE_LENGTHS[id] as i64 * 2);
 }
@@ -4745,12 +4745,12 @@ internal function script_extension_table(script: i64) -> i64 {
 
 internal const FOLD_KEY_COUNT: i64 = 2994;
 
-internal function fold_keys() -> Slice<u32> {
+internal function fold_keys() -> &Slice<u32> {
     return Slice::from_raw(&FOLD_KEYS[0], FOLD_KEY_COUNT);
 }
 
 /// The scalars that fold together with `fold_keys()[position]`, itself excluded.
-internal function fold_equivalents(position: i64) -> Slice<u32> {
+internal function fold_equivalents(position: i64) -> &Slice<u32> {
     const start: i64 = FOLD_OFFSETS[position] as i64;
     const end: i64 = FOLD_OFFSETS[position + 1] as i64;
     return Slice::from_raw(&FOLD_VALUES[start], end - start);

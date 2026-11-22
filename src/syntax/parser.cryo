@@ -265,7 +265,7 @@ private type struct Parser {
     /// The pattern must be well-formed UTF-8: a malformed byte would be
     /// read as U+FFFD and silently match something else.
     check_pattern_text(&this) -> Option<Error> {
-        const bytes: Slice<u8> = this.pattern.as_bytes();
+        const bytes: &Slice<u8> = this.pattern.as_bytes();
         for (mut i: i64 = 0; i < this.chars.length(); i++) {
             const c: PatternChar = this.chars[i];
             if (c.scalar != 0xFFFD) { continue; }
@@ -602,7 +602,7 @@ private type struct Parser {
         if (this.position == start) {
             return Result::Err(this.error_here(ErrorKind::GroupNameEmpty));
         }
-        const name: Str = this.pattern.sub_bytes(this.offset(start), this.offset(this.position));
+        const name: Str = this.pattern.byte_substring(this.offset(start), this.offset(this.position));
         this.bump();
         return Result::Ok(name);
     }
@@ -952,7 +952,7 @@ private type struct Parser {
     perl_class(&this, letter: u8, set: mut &ClassRanges) -> boolean {
         const lower: u8 = letter.to_ascii_lowercase();
         if (this.flags.unicode) {
-            const table: Slice<u32> = if (lower == 0x64) { unicode::perl_digit() } else {
+            const table: &Slice<u32> = if (lower == 0x64) { unicode::perl_digit() } else {
                 if (lower == 0x73) { unicode::perl_space() } else { unicode::perl_word() }
             };
             const ranges: ClassRanges = ClassRanges::from_table(table);
@@ -1038,7 +1038,7 @@ private type struct Parser {
         } else {
             this.bump();
         }
-        const body: Str = this.pattern.sub_bytes(this.offset(name_start), this.offset(name_end));
+        const body: Str = this.pattern.byte_substring(this.offset(name_start), this.offset(name_end));
         match (unicode::property_table(body)) {
             Result::Ok(table) => {
                 const ranges: ClassRanges = ClassRanges::from_table(table);
@@ -1237,7 +1237,7 @@ private type struct Parser {
         if (at + 1 >= this.chars.length() || this.chars[at].scalar != 0x3A || this.chars[at + 1].scalar != 0x5D) {
             return Result::Ok(false);
         }
-        const name: Str = this.pattern.sub_bytes(this.offset(name_start), this.offset(name_end));
+        const name: Str = this.pattern.byte_substring(this.offset(name_start), this.offset(name_end));
         mut set: ClassRanges = ClassRanges::new();
         if (!posix_class(name, &set)) {
             return Result::Err(this.error_span(ErrorKind::ClassPosixUnrecognized, start, at + 2));

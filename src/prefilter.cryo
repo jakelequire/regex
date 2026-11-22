@@ -85,7 +85,7 @@ internal type struct Prefilter {
                     position = find_byte(bytes, position, end, first);
                     if (position >= end) { return end; }
                     if (position + length > end) { return end; }
-                    if (libc::memcmp((bytes + position) as void*, this.literal.as_ptr() as void*, length as u64) == 0) {
+                    if (libc::memcmp((bytes + position) as void*, this.literal.as_pointer() as void*, length as u64) == 0) {
                         return position;
                     }
                     position = position + 1;

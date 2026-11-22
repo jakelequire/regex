@@ -6,22 +6,22 @@ namespace RegexTests::Bytes;
 import std::core::slice::{ Slice };
 import std::collections::array::{ Array };
 import std::collections::str::{ Str };
-import std::test::assert::{ expect, expect_eq };
+import std::test::assert::{ expect, expect_equal };
 import std::test::error::{ TestError };
 import regex::bytes::{ Regex, RegexBuilder, Match, Captures };
 
-private function bytes_of(text: string) -> Slice<u8> {
+private function bytes_of(text: string) -> &Slice<u8> {
     return Str::new(text).as_bytes();
 }
 
 ![test]
 function invalid_utf8_haystacks_are_searched() -> Result<(), TestError> {
     mut raw: [u8; 6] = [0x61, 0xFF, 0x62, 0xC3, 0x28, 0x63];
-    const haystack: Slice<u8> = Slice::from_raw(&raw[0], 6);
+    const haystack: &Slice<u8> = Slice::from_raw(&raw[0], 6);
     const re: Regex = Regex::new(Str::new("[a-c]")).unwrap();
     mut count: i64 = 0;
     for (m in re.find_iter(haystack)) { count = count + 1; }
-    expect_eq(count, 3 as i64)?;
+    expect_equal(count, 3 as i64)?;
     // Unicode `.` reads scalars and never matches a malformed byte.
     const dot: Regex = Regex::new(Str::new("a.b")).unwrap();
     return expect(!dot.is_match(haystack), "a malformed byte is no scalar");
@@ -30,23 +30,23 @@ function invalid_utf8_haystacks_are_searched() -> Result<(), TestError> {
 ![test]
 function unicode_off_reads_single_bytes() -> Result<(), TestError> {
     mut raw: [u8; 4] = [0x61, 0xFF, 0xFE, 0x62];
-    const haystack: Slice<u8> = Slice::from_raw(&raw[0], 4);
+    const haystack: &Slice<u8> = Slice::from_raw(&raw[0], 4);
     const any: Regex = Regex::new(Str::new("(?-u)a..b")).unwrap();
     expect(any.is_match(haystack), "(?-u). matches any byte")?;
     const exact: Regex = Regex::new(Str::new("(?-u)\\xFF\\xFE")).unwrap();
     const found: Match = exact.find(haystack).unwrap();
-    expect_eq(found.start(), 1 as i64)?;
-    expect_eq(found.end(), 3 as i64)?;
+    expect_equal(found.start(), 1 as i64)?;
+    expect_equal(found.end(), 3 as i64)?;
     const high: Regex = Regex::new(Str::new("(?-u)[\\x80-\\xFF]+")).unwrap();
-    return expect_eq(high.find(haystack).unwrap().length(), 2 as i64);
+    return expect_equal(high.find(haystack).unwrap().length(), 2 as i64);
 }
 
 ![test]
 function unicode_on_matches_utf8_in_bytes() -> Result<(), TestError> {
     const re: Regex = Regex::new(Str::new("\\p{Greek}+")).unwrap();
     const found: Match = re.find(bytes_of("ab \u{3b1}\u{3b2}")).unwrap();
-    expect_eq(found.start(), 3 as i64)?;
-    return expect_eq(found.end(), 7 as i64);
+    expect_equal(found.start(), 3 as i64)?;
+    return expect_equal(found.end(), 7 as i64);
 }
 
 ![test]
@@ -56,7 +56,7 @@ function empty_matches_advance_one_byte() -> Result<(), TestError> {
     const re: Regex = Regex::new(Str::new("")).unwrap();
     mut count: i64 = 0;
     for (m in re.find_iter(bytes_of("\u{e9}"))) { count = count + 1; }
-    return expect_eq(count, 3 as i64);
+    return expect_equal(count, 3 as i64);
 }
 
 ![test]
@@ -68,7 +68,7 @@ function replace_and_captures_over_bytes() -> Result<(), TestError> {
     expect(Str::from(caps.name(Str::new("key")).unwrap().as_bytes()) == Str::new("x"), "named group")?;
     mut pieces: i64 = 0;
     for (piece in Regex::new(Str::new(";")).unwrap().split(bytes_of("a;b;c"))) { pieces = pieces + 1; }
-    return expect_eq(pieces, 3 as i64);
+    return expect_equal(pieces, 3 as i64);
 }
 
 ![test]

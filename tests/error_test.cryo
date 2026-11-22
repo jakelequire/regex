@@ -6,7 +6,7 @@ namespace RegexTests::Errors;
 
 import std::collections::str::{ Str };
 import std::collections::string::{ String };
-import std::test::assert::{ bail, expect, expect_eq };
+import std::test::assert::{ bail, expect, expect_equal };
 import std::test::error::{ TestError };
 import regex::{ Regex, RegexBuilder, Error, ErrorKind };
 
@@ -147,7 +147,7 @@ function deep_nesting_never_exhausts_the_stack() -> Result<(), TestError> {
     const groups: String = nested(5000, 0x28, 0x61, 0x29);
     const deep_groups: Regex = RegexBuilder::new(groups.as_str()).nest_limit(10000).build().unwrap();
     expect(deep_groups.is_match(Str::new("a")), "5000 nested groups match")?;
-    expect_eq(deep_groups.captures_length(), 5001 as i64)?;
+    expect_equal(deep_groups.captures_length(), 5001 as i64)?;
     const classes: String = nested(5000, 0x5B, 0x61, 0x5D);
     const deep_classes: Regex = RegexBuilder::new(classes.as_str()).nest_limit(10000).build().unwrap();
     expect(deep_classes.is_match(Str::new("a")), "5000 nested classes match")?;
@@ -156,7 +156,7 @@ function deep_nesting_never_exhausts_the_stack() -> Result<(), TestError> {
     starred.push_byte(0x61);
     for (mut i: i64 = 0; i < 5000; i++) { starred.push(Str::new(")*")); }
     const deep_stars: Regex = RegexBuilder::new(starred.as_str()).nest_limit(10000).build().unwrap();
-    return expect_eq(deep_stars.find(Str::new("aaa")).unwrap().end(), 3 as i64);
+    return expect_equal(deep_stars.find(Str::new("aaa")).unwrap().end(), 3 as i64);
 }
 
 ![test]
@@ -172,7 +172,7 @@ function display_underlines_the_span() -> Result<(), TestError> {
     const error: Error = Regex::new(Str::new("ab[z-a]")).unwrap_err();
     const shown: String = f"{error}";
     const expected: Str = Str::new("regex parse error:\n    ab[z-a]\n       ^^^\nerror: invalid character class range: the start is after the end");
-    return expect_eq(shown.as_str(), expected);
+    return expect_equal(shown.as_str(), expected);
 }
 
 ![test]
@@ -180,7 +180,7 @@ function display_counts_columns_in_scalars() -> Result<(), TestError> {
     const error: Error = Regex::new(Str::new("\u{e9}\u{e9}(")).unwrap_err();
     const shown: String = f"{error}";
     const expected: Str = Str::new("regex parse error:\n    \u{e9}\u{e9}(\n      ^\nerror: unclosed group");
-    return expect_eq(shown.as_str(), expected);
+    return expect_equal(shown.as_str(), expected);
 }
 
 ![test]

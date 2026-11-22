@@ -6,7 +6,7 @@ namespace RegexTests::Api;
 
 import std::collections::str::{ Str };
 import std::collections::string::{ String };
-import std::test::assert::{ bail, expect, expect_eq };
+import std::test::assert::{ bail, expect, expect_equal };
 import std::test::error::{ TestError };
 import regex::{ Regex, RegexBuilder, Match, Captures, escape };
 
@@ -22,9 +22,9 @@ private function text(value: string) -> Str {
 function groups_that_did_not_take_part_have_no_span() -> Result<(), TestError> {
     const re: Regex = compile("(a)|(b)");
     const caps: Captures = re.captures(text("b")).unwrap();
-    expect_eq(caps.length(), 3 as i64)?;
+    expect_equal(caps.length(), 3 as i64)?;
     expect(caps.get(1).is_none(), "group 1 did not take part")?;
-    expect_eq(caps.get(2).unwrap().as_str(), text("b"))?;
+    expect_equal(caps.get(2).unwrap().as_str(), text("b"))?;
     return expect(caps.get(3).is_none(), "no group 3");
 }
 
@@ -32,21 +32,21 @@ function groups_that_did_not_take_part_have_no_span() -> Result<(), TestError> {
 function a_repeated_group_keeps_its_last_iteration() -> Result<(), TestError> {
     const re: Regex = compile("(\\w)+");
     const caps: Captures = re.captures(text("abc")).unwrap();
-    return expect_eq(caps.get(1).unwrap().as_str(), text("c"));
+    return expect_equal(caps.get(1).unwrap().as_str(), text("c"));
 }
 
 ![test]
 function named_groups_are_reached_by_name_and_number() -> Result<(), TestError> {
     const re: Regex = compile("(?<year>\\d{4})-(?P<month>\\d\\d)-(?'day'\\d\\d)");
     const caps: Captures = re.captures(text("on 2026-11-02.")).unwrap();
-    expect_eq(caps.name(text("year")).unwrap().as_str(), text("2026"))?;
-    expect_eq(caps.name(text("month")).unwrap().as_str(), text("11"))?;
-    expect_eq(caps.get(3).unwrap().as_str(), text("02"))?;
+    expect_equal(caps.name(text("year")).unwrap().as_str(), text("2026"))?;
+    expect_equal(caps.name(text("month")).unwrap().as_str(), text("11"))?;
+    expect_equal(caps.get(3).unwrap().as_str(), text("02"))?;
     expect(caps.name(text("hour")).is_none(), "no such group")?;
-    expect_eq(re.captures_length(), 4 as i64)?;
-    expect_eq(re.capture_name(1).unwrap(), text("year"))?;
+    expect_equal(re.captures_length(), 4 as i64)?;
+    expect_equal(re.capture_name(1).unwrap(), text("year"))?;
     expect(re.capture_name(0).is_none(), "group 0 has no name")?;
-    return expect_eq(re.capture_index(text("day")).unwrap(), 3 as i64);
+    return expect_equal(re.capture_index(text("day")).unwrap(), 3 as i64);
 }
 
 ![test]
@@ -58,8 +58,8 @@ function captures_iter_yields_every_match() -> Result<(), TestError> {
         keys.push(caps.get(1).unwrap().as_str());
         total = total + i64::try_from(caps.get(2).unwrap().as_str()).unwrap();
     }
-    expect_eq(keys.as_str(), text("abbddd"))?;
-    return expect_eq(total, 356 as i64);
+    expect_equal(keys.as_str(), text("abbddd"))?;
+    return expect_equal(total, 356 as i64);
 }
 
 ![test]
@@ -74,22 +74,22 @@ function find_at_sees_the_whole_haystack() -> Result<(), TestError> {
 ![test]
 function replace_expands_references() -> Result<(), TestError> {
     const re: Regex = compile("(?<user>\\w+)@(\\w+)");
-    expect_eq(re.replace_all(text("x@y and a@b"), text("$2 at $1")).as_str(), text("y at x and b at a"))?;
-    expect_eq(re.replace(text("x@y and a@b"), text("${user}!")).as_str(), text("x! and a@b"))?;
-    expect_eq(re.replace_all(text("x@y"), text("$$1")).as_str(), text("$1"))?;
+    expect_equal(re.replace_all(text("x@y and a@b"), text("$2 at $1")).as_str(), text("y at x and b at a"))?;
+    expect_equal(re.replace(text("x@y and a@b"), text("${user}!")).as_str(), text("x! and a@b"))?;
+    expect_equal(re.replace_all(text("x@y"), text("$$1")).as_str(), text("$1"))?;
     // A reference starting with a digit takes only digits.
-    expect_eq(re.replace_all(text("x@y"), text("$1a")).as_str(), text("xa"))?;
+    expect_equal(re.replace_all(text("x@y"), text("$1a")).as_str(), text("xa"))?;
     // Unknown and non-participating groups expand to nothing.
-    expect_eq(re.replace_all(text("x@y"), text("[$9][$nope]")).as_str(), text("[][]"))?;
+    expect_equal(re.replace_all(text("x@y"), text("[$9][$nope]")).as_str(), text("[][]"))?;
     // A `$` starting no reference is itself.
-    expect_eq(re.replace_all(text("x@y"), text("$ ${} $")).as_str(), text("$ ${} $"))?;
-    return expect_eq(re.replacen(text("a@b c@d e@f"), 2, text("_")).as_str(), text("_ _ e@f"));
+    expect_equal(re.replace_all(text("x@y"), text("$ ${} $")).as_str(), text("$ ${} $"))?;
+    return expect_equal(re.replacen(text("a@b c@d e@f"), 2, text("_")).as_str(), text("_ _ e@f"));
 }
 
 ![test]
 function replace_all_with_empty_matches() -> Result<(), TestError> {
     const re: Regex = compile("x*");
-    return expect_eq(re.replace_all(text("abxd"), text("-")).as_str(), text("-a-b-d-"));
+    return expect_equal(re.replace_all(text("abxd"), text("-")).as_str(), text("-a-b-d-"));
 }
 
 ![test]
@@ -100,16 +100,16 @@ function split_yields_the_text_between_matches() -> Result<(), TestError> {
         pieces.push(piece);
         pieces.push_byte(0x7C);
     }
-    expect_eq(pieces.as_str(), text("a|b||c||"))?;
+    expect_equal(pieces.as_str(), text("a|b||c||"))?;
     mut limited: String = String::new();
     for (piece in re.splitn(text("a,b,,c,"), 2)) {
         limited.push(piece);
         limited.push_byte(0x7C);
     }
-    expect_eq(limited.as_str(), text("a|b,,c,|"))?;
+    expect_equal(limited.as_str(), text("a|b,,c,|"))?;
     mut none: i64 = 0;
     for (piece in re.splitn(text("a,b"), 0)) { none = none + 1; }
-    return expect_eq(none, 0 as i64);
+    return expect_equal(none, 0 as i64);
 }
 
 ![test]
@@ -120,7 +120,7 @@ function split_on_whitespace_runs() -> Result<(), TestError> {
         pieces.push(piece);
         pieces.push_byte(0x7C);
     }
-    return expect_eq(pieces.as_str(), text("|one|two|three||"));
+    return expect_equal(pieces.as_str(), text("|one|two|three||"));
 }
 
 ![test]
@@ -129,8 +129,8 @@ function escape_makes_any_text_literal() -> Result<(), TestError> {
     const escaped: String = escape(raw);
     const re: Regex = Regex::new(escaped.as_str()).unwrap();
     const found: Match = re.find(raw).unwrap();
-    expect_eq(found.start(), 0 as i64)?;
-    expect_eq(found.end(), raw.length())?;
+    expect_equal(found.start(), 0 as i64)?;
+    expect_equal(found.end(), raw.length())?;
     // Verbose mode would otherwise eat the escaped space and `#`.
     const verbose: Regex = RegexBuilder::new(escaped.as_str()).ignore_whitespace(true).build().unwrap();
     return expect(verbose.is_match(raw), "escaped text survives verbose mode");
@@ -145,9 +145,9 @@ function builder_flags_match_inline_flags() -> Result<(), TestError> {
     const dot: Regex = RegexBuilder::new(text("a.b")).dot_matches_new_line(true).build().unwrap();
     expect(dot.is_match(text("a\nb")), "dot_matches_new_line")?;
     const lazy: Regex = RegexBuilder::new(text("a+")).swap_greed(true).build().unwrap();
-    expect_eq(lazy.find(text("aaa")).unwrap().end(), 1 as i64)?;
+    expect_equal(lazy.find(text("aaa")).unwrap().end(), 1 as i64)?;
     const ascii: Regex = RegexBuilder::new(text("\\w+")).unicode(false).build().unwrap();
-    expect_eq(ascii.find(text("\u{e9}t\u{e9}")).unwrap().as_str(), text("t"))?;
+    expect_equal(ascii.find(text("\u{e9}t\u{e9}")).unwrap().as_str(), text("t"))?;
     // An inline flag overrides the builder's for its scope.
     const scoped: Regex = RegexBuilder::new(text("a(?-i:b)")).case_insensitive(true).build().unwrap();
     expect(scoped.is_match(text("Ab")), "inline flag wins")?;
@@ -166,9 +166,9 @@ function is_match_and_find_agree() -> Result<(), TestError> {
 ![test]
 function regex_displays_its_pattern() -> Result<(), TestError> {
     const re: Regex = compile("a+b");
-    expect_eq(re.as_str(), text("a+b"))?;
+    expect_equal(re.as_str(), text("a+b"))?;
     const shown: String = f"{re}";
-    return expect_eq(shown.as_str(), text("a+b"));
+    return expect_equal(shown.as_str(), text("a+b"));
 }
 
 ![test]
@@ -183,5 +183,5 @@ function one_regex_serves_nested_searches() -> Result<(), TestError> {
         }
         expect(re.is_match(outer.as_str()), "nested is_match")?;
     }
-    return expect_eq(sum, 6 as i64);
+    return expect_equal(sum, 6 as i64);
 }

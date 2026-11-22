@@ -104,12 +104,12 @@ internal type struct Hir {
         return this.children[first + offset];
     }
 
-    internal literal(&this, start: u32, length: u32) -> Slice<u8> {
+    internal literal(&this, start: u32, length: u32) -> &Slice<u8> {
         return this.literal_bytes.as_slice().subslice(start as i64, (start + length) as i64);
     }
 
     internal class(&this, index: u32) -> HirClass* {
-        return this.classes.get_ref(index as i64).unwrap();
+        return this.classes.get_reference(index as i64).unwrap();
     }
 
     private add(mut &this, node: HirNode) -> u32 {
@@ -126,7 +126,7 @@ internal type struct Hir {
     }
 
     /// A literal of `bytes`. An empty one is the empty node.
-    internal add_literal(mut &this, bytes: Slice<u8>) -> u32 {
+    internal add_literal(mut &this, bytes: &Slice<u8>) -> u32 {
         if (bytes.length() == 0) { return this.add_empty(); }
         const start: u32 = this.literal_bytes.length() as u32;
         this.literal_bytes.append(bytes);
@@ -164,7 +164,7 @@ internal type struct Hir {
 
     /// The sequence of `items`, with adjacent literals joined and empty
     /// nodes dropped. One item is that item; none is the empty node.
-    internal add_concat(mut &this, items: Slice<u32>) -> u32 {
+    internal add_concat(mut &this, items: &Slice<u32>) -> u32 {
         mut kept: Array<u32> = Array::new();
         mut pending: Array<u8> = Array::new();
         for (item in items) {
@@ -209,7 +209,7 @@ internal type struct Hir {
     }
 
     /// The alternation of `items`, in priority order. One item is that item.
-    internal add_alternation(mut &this, items: Slice<u32>) -> u32 {
+    internal add_alternation(mut &this, items: &Slice<u32>) -> u32 {
         if (items.length() == 1) { return items[0]; }
         const first: u32 = this.children.length() as u32;
         this.children.append(items);
@@ -239,13 +239,13 @@ public type struct GroupInfo {
     public name(&this, index: i64) -> Option<Str> {
         if (index < 0 || index >= this.names.length()) { return Option::None; }
         if (!this.named[index]) { return Option::None; }
-        return Option::Some(this.names.get_ref(index).unwrap().as_str());
+        return Option::Some(this.names.get_reference(index).unwrap().as_str());
     }
 
     /// The index of the group called `name`.
     public index_of(&this, name: Str) -> Option<i64> {
         for (mut i: i64 = 1; i < this.names.length(); i++) {
-            if (this.named[i] && this.names.get_ref(i).unwrap().as_str() == name) {
+            if (this.named[i] && this.names.get_reference(i).unwrap().as_str() == name) {
                 return Option::Some(i);
             }
         }

@@ -15,7 +15,7 @@ namespace regex::compiler;
 import std::core::option::{ Option };
 import std::core::result::{ Result };
 import std::core::slice::{ Slice };
-import std::core::hash::{ DefaultHasher, Hasher };
+import std::core::hash::{ FnvHasher, Hasher };
 import std::collections::array::{ Array };
 import std::collections::hashmap::{ HashMap };
 import std::collections::str::{ Str };
@@ -204,7 +204,7 @@ private type struct Compiler {
         }
     }
 
-    compile_literal(mut &this, bytes: Slice<u8>) -> Result<Fragment, Error> {
+    compile_literal(mut &this, bytes: &Slice<u8>) -> Result<Fragment, Error> {
         const first: u32 = this.add(State::ByteRange(bytes[0], bytes[0], HOLE))?;
         mut last: u32 = first;
         for (mut i: i64 = 1; i < bytes.length(); i++) {
@@ -215,7 +215,7 @@ private type struct Compiler {
         return Result::Ok(Fragment { start: first, end: last });
     }
 
-    build_concat(mut &this, parts: Slice<Fragment>) -> Fragment {
+    build_concat(mut &this, parts: &Slice<Fragment>) -> Fragment {
         mut whole: Fragment = parts[0];
         for (mut i: i64 = 1; i < parts.length(); i++) {
             this.patch(whole.end, parts[i].start);
@@ -224,7 +224,7 @@ private type struct Compiler {
         return whole;
     }
 
-    build_alternation(mut &this, branches: Slice<Fragment>) -> Result<Fragment, Error> {
+    build_alternation(mut &this, branches: &Slice<Fragment>) -> Result<Fragment, Error> {
         const join: u32 = this.add(State::Empty(HOLE))?;
         const alternates_start: u32 = this.nfa.alternates.length() as u32;
         for (branch in branches) {
@@ -246,7 +246,7 @@ private type struct Compiler {
     /// Join the compiled copies of a repetition's operand, as many as
     /// `repetition_copies` asks for. `empty_able` says the operand can
     /// match the empty string.
-    build_repetition(mut &this, copies: Slice<Fragment>, min: u32, max: u32, greedy: boolean, empty_able: boolean) -> Result<Fragment, Error> {
+    build_repetition(mut &this, copies: &Slice<Fragment>, min: u32, max: u32, greedy: boolean, empty_able: boolean) -> Result<Fragment, Error> {
         if (max == UNBOUNDED && min == 0) {
             const body: Fragment = copies[0];
             const loop_split: u32 = this.split(greedy, body.start)?;
@@ -339,12 +339,12 @@ private type struct Compiler {
 
     /// The state reading `transitions`, reusing an identical one already
     /// built for this class.
-    state_for(mut &this, transitions: Slice<Transition>, cache: mut &HashMap<u64, u32>) -> Result<u32, Error> {
-        mut hasher: DefaultHasher = DefaultHasher::new();
+    state_for(mut &this, transitions: &Slice<Transition>, cache: mut &HashMap<u64, u32>) -> Result<u32, Error> {
+        mut hasher: FnvHasher = FnvHasher::new();
         for (t in transitions) {
-            hasher.write_uint(t.low as u128, 1);
-            hasher.write_uint(t.high as u128, 1);
-            hasher.write_uint(t.next as u128, 4);
+            hasher.write_unsigned_integer(t.low as u128, 1);
+            hasher.write_unsigned_integer(t.high as u128, 1);
+            hasher.write_unsigned_integer(t.next as u128, 4);
         }
         const key: u64 = hasher.finish();
         match (cache.get(&key)) {
@@ -367,7 +367,7 @@ private type struct Compiler {
     }
 
     /// True when state `id` reads exactly `transitions`.
-    reads_exactly(&this, id: u32, transitions: Slice<Transition>) -> boolean {
+    reads_exactly(&this, id: u32, transitions: &Slice<Transition>) -> boolean {
         match (this.nfa.states[id]) {
             State::ByteRange(low, high, next) => {
                 if (transitions.length() != 1) { return false; }
@@ -523,7 +523,7 @@ private function repetition_copies(min: u32, max: u32) -> u32 {
 }
 
 /// The `count` fragments on top of `values`, oldest first.
-private function top(values: &Array<Fragment>, count: i64) -> Slice<Fragment> {
+private function top(values: &Array<Fragment>, count: i64) -> &Slice<Fragment> {
     return values.as_slice().subslice(values.length() - count, values.length());
 }
 

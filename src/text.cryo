@@ -20,7 +20,7 @@ import std::collections::array::{ Array };
 import std::collections::str::{ Str };
 import std::collections::string::{ String };
 import std::fmt::display::{ Display, Debug, Formatter };
-import std::fmt::error::{ FmtError };
+import std::fmt::error::{ FormatError };
 import regex::error::{ Error };
 import regex::engine::{ Config };
 import regex::bytes;
@@ -136,13 +136,13 @@ public type struct Regex {
 }
 
 implement trait Display for struct Regex {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         return f.write_str(this.inner.as_str());
     }
 }
 
 implement trait Debug for struct Regex {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         f.write_str(Str::new("Regex("))?;
         f.write_str(this.inner.as_str())?;
         return f.write_str(Str::new(")"));
@@ -244,18 +244,18 @@ public type struct Match {
 
     /// The matched text.
     public as_str(&this) -> Str {
-        return this.haystack.sub_bytes(this.start_offset, this.end_offset);
+        return this.haystack.byte_substring(this.start_offset, this.end_offset);
     }
 }
 
 implement trait Display for struct Match {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         return f.write_str(this.as_str());
     }
 }
 
 implement trait Debug for struct Match {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         return f.write(f"Match({this.start_offset}..{this.end_offset}, {this.as_str():?})");
     }
 }

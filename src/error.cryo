@@ -10,7 +10,7 @@ import std::core::result::{ Result };
 import std::collections::str::{ Str };
 import std::collections::string::{ String };
 import std::fmt::display::{ Display, Debug, Formatter };
-import std::fmt::error::{ FmtError };
+import std::fmt::error::{ FormatError };
 
 /// The closed set of reasons a pattern is refused.
 public type enum ErrorKind {
@@ -184,7 +184,7 @@ public type struct Error {
 /// byte offsets instead, since a caret under one line would point at the
 /// wrong text.
 implement trait Display for struct Error {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         const pattern: Str = this.pattern.as_str();
         if (pattern.find_byte(0x0A).is_some() || pattern.find_byte(0x0D).is_some()) {
             f.write(f"regex parse error at bytes {this.start}..{this.end}: ")?;
@@ -213,7 +213,7 @@ implement trait Display for struct Error {
 }
 
 implement trait Debug for struct Error {
-    fmt(&this, f: mut &Formatter) -> Result<(), FmtError> {
+    fmt(&this, f: mut &Formatter) -> Result<(), FormatError> {
         f.write(f"Error({this.kind.describe()}, {this.start}..{this.end})")?;
         return Result::Ok(());
     }

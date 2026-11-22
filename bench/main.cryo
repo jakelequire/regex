@@ -45,7 +45,7 @@ function bench_find_iter(name: string, pattern: string, text: Str, rounds: i64) 
         const start: Instant = Instant::now();
         mut count: i64 = 0;
         for (m in re.find_iter(text)) { count = count + 1; }
-        const nanos: u64 = start.elapsed().as_nanos();
+        const nanos: u64 = start.elapsed().as_nanoseconds();
         if (nanos < best) { best = nanos; }
         matches = count;
     }
@@ -64,7 +64,7 @@ function bench_is_match_short(name: string, pattern: string, rounds: i64) -> voi
         for (mut i: i64 = 0; i < calls; i++) {
             if (re.is_match(subject)) { count = count + 1; }
         }
-        const nanos: u64 = start.elapsed().as_nanos();
+        const nanos: u64 = start.elapsed().as_nanoseconds();
         if (nanos < best) { best = nanos; }
         hits = count;
     }
