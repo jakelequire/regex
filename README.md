@@ -32,7 +32,8 @@ regex = { git = "https://github.com/jakelequire/regex.git", version = "0.1" }
 and run `cryo fetch`, which takes the head of the default branch, checks its
 version against your requirement, and pins the commit in `cryoconfig.lock`;
 `cryo update` moves the pin to the newest commit. The library's version is the
-`version` under `[lib]` in its `cryoconfig` (`0.1.0` today), and
+`version` under `[lib]` in its `cryoconfig` (`0.1.1` today, which needs a
+Cryo whose standard library has `std::encoding::utf8`), and
 `version = "0.1"` accepts 0.1.0 and every later 0.1.x. To pin a release
 exactly, add `tag = "v0.1.0"` (or a `rev`, or a `branch`); a tag names the
 same version as the key. To work against a local checkout instead, name its

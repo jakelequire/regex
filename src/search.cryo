@@ -14,8 +14,10 @@
 namespace regex::search;
 
 import std::core::option::{ Option };
+import std::core::slice::{ Slice };
 import std::collections::array::{ Array };
 import std::core::mem;
+import std::encoding::utf8;
 import regex::automaton::{ Automaton, State, Transition };
 import regex::syntax::tree::{ Assertion };
 import regex::prefilter::{ Prefilter };
@@ -306,15 +308,17 @@ internal type struct Input {
     }
 
     /// True when a word character ends just before `at`: an ASCII one
-    /// (`[0-9A-Za-z_]`), or with `unicode` a scalar `\w` matches.
+    /// (`[0-9A-Za-z_]`), or with `unicode` a scalar `\w` matches.  An ASCII
+    /// byte is a whole scalar, and the ASCII scalars `\w` matches are those
+    /// same ones, so only a byte above ASCII is decoded.
     private is_word_before(&this, at: i64, unicode: boolean) -> boolean {
-        if (!unicode) {
-            if (at <= 0) { return false; }
-            const byte: u8 = this.bytes[at - 1];
+        if (at <= 0) { return false; }
+        const byte: u8 = this.bytes[at - 1];
+        if (!unicode || byte < 0x80) {
             return (byte as char).is_alphanumeric() || byte == 0x5F;
         }
-        return match (Utf8::decode_before(this.bytes, this.length, at)) {
-            Option::Some(scalar) => { UnicodeProperties::is_word_scalar(scalar) }
+        return match (std::encoding::utf8::Utf8::decode_before(Slice::from_raw(this.bytes, this.length), at)) {
+            Option::Some(decoded) => { UnicodeProperties::is_word_scalar(decoded.scalar) }
             Option::None => { false }
         };
     }
@@ -322,13 +326,13 @@ internal type struct Input {
     /// True when a word character starts at `at`, read as `is_word_before`
     /// reads one.
     private is_word_at(&this, at: i64, unicode: boolean) -> boolean {
-        if (!unicode) {
-            if (at >= this.length) { return false; }
-            const byte: u8 = this.bytes[at];
+        if (at >= this.length) { return false; }
+        const byte: u8 = this.bytes[at];
+        if (!unicode || byte < 0x80) {
             return (byte as char).is_alphanumeric() || byte == 0x5F;
         }
-        return match (Utf8::decode_at(this.bytes, this.length, at)) {
-            Option::Some(scalar) => { UnicodeProperties::is_word_scalar(scalar) }
+        return match (std::encoding::utf8::Utf8::decode_at(Slice::from_raw(this.bytes, this.length), at)) {
+            Option::Some(decoded) => { UnicodeProperties::is_word_scalar(decoded.scalar) }
             Option::None => { false }
         };
     }

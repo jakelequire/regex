@@ -4,10 +4,9 @@
 ///! sequences that encode exactly that range, which is how a Unicode class
 ///! becomes byte transitions. Encoding goes through `String.push_char`.
 ///!
-///! `Utf8` reads one scalar before or after a position, as the word
-///! boundary assertions need. The standard library decodes forward only,
-///! through an iterator, and keeps its single-scalar decoder private, so
-///! the two small decoders here are the library's own.
+///! `Utf8::is_boundary` says whether a byte starts a scalar. The word
+///! boundary assertions read the scalar before or after a position with
+///! the standard library's `std::encoding::utf8::Utf8`.
 
 namespace regex::utf8;
 
@@ -108,7 +107,7 @@ private type struct ScalarRange {
     end: u32;
 }
 
-/// Reading scalars at a byte position of `[bytes, bytes + length)`.
+/// Where the scalars of `[bytes, bytes + length)` start.
 internal type struct Utf8 {
     /// True when byte `position` starts a scalar (or is the end): it is not
     /// a continuation byte.
@@ -116,49 +115,5 @@ internal type struct Utf8 {
     internal static is_boundary(bytes: u8*, length: i64, position: i64) -> boolean {
         if (position <= 0 || position >= length) { return true; }
         return (bytes[position] & 0xC0) != 0x80;
-    }
-
-    /// The scalar encoded at `position`, or `None` at the end or where the
-    /// bytes there are not well-formed UTF-8.
-    internal static decode_at(bytes: u8*, length: i64, position: i64) -> Option<u32> {
-        if (position < 0 || position >= length) { return Option::None; }
-        const lead: u8 = bytes[position];
-        const width: i64 = Utf8::sequence_length(lead);
-        if (width == 0 || position + width > length) { return Option::None; }
-        if (width == 1) { return Option::Some(lead as u32); }
-        mut scalar: u32 = (lead as u32) & (0x7F >> width as u32);
-        for (mut i: i64 = 1; i < width; i++) {
-            const next: u8 = bytes[position + i];
-            if ((next & 0xC0) != 0x80) { return Option::None; }
-            scalar = (scalar << 6) | ((next & 0x3F) as u32);
-        }
-        // Overlong forms, surrogates and values past the last scalar.
-        if (width == 3 && (scalar < 0x800 || (scalar >= 0xD800 && scalar <= 0xDFFF))) { return Option::None; }
-        if (width == 4 && (scalar < 0x10000 || scalar > 0x10FFFF)) { return Option::None; }
-        return Option::Some(scalar);
-    }
-
-    /// The scalar that ends just before `position`, or `None` at the start
-    /// or where the bytes there are not well-formed UTF-8.
-    internal static decode_before(bytes: u8*, length: i64, position: i64) -> Option<u32> {
-        if (position <= 0 || position > length) { return Option::None; }
-        mut start: i64 = position - 1;
-        const limit: i64 = if (position >= 4) { position - 4 } else { 0 };
-        while (start > limit && (bytes[start] & 0xC0) == 0x80) {
-            start = start - 1;
-        }
-        const lead: u8 = bytes[start];
-        if (start + Utf8::sequence_length(lead) != position) { return Option::None; }
-        return Utf8::decode_at(bytes, length, start);
-    }
-
-    /// The number of bytes a well-formed sequence led by `lead` takes, or 0
-    /// for a byte no sequence starts with.
-    private static sequence_length(lead: u8) -> i64 {
-        if (lead < 0x80) { return 1; }
-        if (lead >= 0xC2 && lead <= 0xDF) { return 2; }
-        if (lead >= 0xE0 && lead <= 0xEF) { return 3; }
-        if (lead >= 0xF0 && lead <= 0xF4) { return 4; }
-        return 0;
     }
 }

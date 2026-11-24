@@ -237,7 +237,8 @@ internal type struct ClassRanges {
         const original: i64 = this.intervals.length();
         for (mut index: i64 = 0; index < original; index++) {
             const interval: Interval = this.intervals[index];
-            mut position: i64 = ClassRanges::lower_bound(keys, interval.start);
+            // The first key at or above the interval's start.
+            mut position: i64 = keys.partition_point((key: &u32) -> boolean { return *key < interval.start; });
             while (position < keys.length() && keys[position] <= interval.end) {
                 const equivalents: &Slice<u32> = UnicodeTables::fold_equivalents(position);
                 for (value in equivalents) {
@@ -266,20 +267,5 @@ internal type struct ClassRanges {
             this.intervals.push(Interval { start: interval.start + 32, end: interval.end + 32 });
         }
         this.canonicalize();
-    }
-
-    /// The first position in the sorted `values` holding a value `>= target`.
-    private static lower_bound(values: &Slice<u32>, target: u32) -> i64 {
-        mut low: i64 = 0;
-        mut high: i64 = values.length();
-        while (low < high) {
-            const middle: i64 = low + (high - low) / 2;
-            if (values[middle] < target) {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
-        }
-        return low;
     }
 }

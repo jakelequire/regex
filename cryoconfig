@@ -12,7 +12,7 @@ source_paths = ["src"]
 [lib]
 name       = "regex"
 source_dir = "src"
-version    = "0.1.0"
+version    = "0.1.1"
 
 # `cryo test` needs an executable target; the demo is that target.
 [[bin]]

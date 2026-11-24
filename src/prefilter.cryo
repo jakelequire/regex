@@ -12,6 +12,8 @@
 
 namespace regex::prefilter;
 
+import std::core::option::{ Option };
+import std::core::slice::{ Slice };
 import std::collections::array::{ Array };
 import std::ffi::libc;
 import regex::automaton::{ Automaton };
@@ -61,13 +63,6 @@ internal type struct Prefilter {
         return prefilter;
     }
 
-    /// The first `byte` in `[at, end)`, or `end`.
-    private static find_byte(bytes: u8*, at: i64, end: i64, byte: u8) -> i64 {
-        const found: void* = libc::memchr((bytes + at) as void*, byte as i32, (end - at) as u64);
-        if (found == null) { return end; }
-        return ((found as u64) - (bytes as u64)) as i64;
-    }
-
     internal is_active(&this) -> boolean {
         return match (this.kind) {
             Kind::Nothing => { false }
@@ -81,15 +76,20 @@ internal type struct Prefilter {
         match (this.kind) {
             Kind::Nothing => { return at; }
             Kind::Byte(byte) => {
-                return Prefilter::find_byte(bytes, at, end, byte);
+                return match (Slice::from_raw(bytes + at, end - at).index_of(&byte)) {
+                    Option::Some(offset) => { at + offset }
+                    Option::None => { end }
+                };
             }
             Kind::Literal => {
                 const length: i64 = this.literal.length();
                 const first: u8 = this.literal[0];
                 mut position: i64 = at;
                 while (position < end) {
-                    position = Prefilter::find_byte(bytes, position, end, first);
-                    if (position >= end) { return end; }
+                    match (Slice::from_raw(bytes + position, end - position).index_of(&first)) {
+                        Option::Some(offset) => { position = position + offset; }
+                        Option::None => { return end; }
+                    }
                     if (position + length > end) { return end; }
                     if (libc::memcmp((bytes + position) as void*, this.literal.as_pointer() as void*, length as u64) == 0) {
                         return position;
